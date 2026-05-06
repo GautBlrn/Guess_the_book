@@ -13,30 +13,30 @@
 # Versions epinglées pour que le build Docker soit reproductible.
 
 # --- Backend Flask ---
-flask==3.0.3
-flask-cors==5.0.0
-gunicorn==23.0.0
+flask
+flask-cors
+gunicorn
 python-dotenv
 
 # --- Frontend Streamlit ---
-streamlit==1.39.0
-requests==2.32.3
+streamlit
+requests
 
 # --- NLP runtime (annotation de l'extrait utilisateur) ---
-spacy==3.7.5
+spacy
 # Le modele fr_core_news_sm est installe via `spacy download` dans le
 # Dockerfile, pas via pip (cf. instructions spaCy).
 
 # --- Calcul scientifique ---
-numpy==1.26.4
-pandas==2.2.3
-scipy==1.13.1
+numpy
+pandas
+scipy
 
 # --- Stockage S3 ---
-boto3==1.35.36
-botocore==1.35.36
+boto3
+botocore
 
 # --- Parquet (pour `charger_corpus` côté précompute -- pas utilisé au runtime
 #     mais le module pipeline.corpus l'importe au top-level, donc on le garde
 #     pour éviter ImportError. ~5 Mo, négligeable.) ---
-pyarrow==17.0.0
+pyarrow
