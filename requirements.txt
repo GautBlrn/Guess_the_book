@@ -1,0 +1,41 @@
+# =============================================================================
+# Dépendances pour le runtime de l'app deployée.
+# =============================================================================
+#
+# Sont volontairement EXCLUS :
+# - sentence-transformers / torch / transformers : utilisés seulement en
+#   précompute (rebuild_artifacts pour les resumes MMR, qui sont stockés
+#   sur S3 et juste lus par le serveur).
+# - gensim (Word2Vec) : aucune route ne l'utilise.
+# - matplotlib / altair : pas de graphes générés côté serveur.
+# - jupyter / ipykernel : pour le dev local, pas pour la prod.
+#
+# Versions epinglées pour que le build Docker soit reproductible.
+
+# --- Backend Flask ---
+flask==3.0.3
+flask-cors==5.0.0
+gunicorn==23.0.0
+
+# --- Frontend Streamlit ---
+streamlit==1.39.0
+requests==2.32.3
+
+# --- NLP runtime (annotation de l'extrait utilisateur) ---
+spacy==3.7.5
+# Le modele fr_core_news_sm est installe via `spacy download` dans le
+# Dockerfile, pas via pip (cf. instructions spaCy).
+
+# --- Calcul scientifique ---
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.13.1
+
+# --- Stockage S3 ---
+boto3==1.35.36
+botocore==1.35.36
+
+# --- Parquet (pour `charger_corpus` côté précompute -- pas utilisé au runtime
+#     mais le module pipeline.corpus l'importe au top-level, donc on le garde
+#     pour éviter ImportError. ~5 Mo, négligeable.) ---
+pyarrow==17.0.0

@@ -1,0 +1,77 @@
+# =============================================================================
+# Fichiers exclus du build Docker (on n'en veut pas dans l'image).
+# =============================================================================
+
+# --- Secrets ---
+.env
+.env.*
+*.pem
+*.key
+
+# --- Python dev ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Notebooks et fichiers de dev ---
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# --- Données et artefacts locaux ---
+# (le bundle est telecharge depuis S3 au demarrage, pas embarque)
+artifacts/
+summaries/
+data/
+models/
+figures/
+
+# --- Audits et fichiers generes pendant le dev ---
+audit_*.png
+audit_*.txt
+audit_*.csv
+diagnostic_*.png
+diagnostic_*.txt
+*.log
+
+# --- Fichiers IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Scripts de precompute (pas necessaires au runtime) ---
+scripts/
+build_serving_bundle.py
+audit_corpus.py
+audit_clean_borders.py
+diagnostic_mmr.py
+
+# --- Catalogue Gutenberg (lourd, pas necessaire au runtime) ---
+pg_catalog.csv
+
+# --- Git ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Docker (meta) ---
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# --- Documentation ---
+README.md
+*.md
+docs/
+
+# --- App dev hors-prod ---
+app/dev/
