@@ -1,0 +1,57 @@
+# =============================================================================
+# Fichiers exclus de Git (NE JAMAIS commiter).
+# =============================================================================
+
+# --- SECRETS (jamais sur GitHub) ---
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Notebooks (checkpoints) ---
+.ipynb_checkpoints/
+
+# --- Données et artefacts locaux ---
+# (régénérables via les scripts, pas la peine de les versionner)
+artifacts/
+summaries/
+data/
+models/
+figures/
+
+# --- Sorties de scripts ---
+audit_*.png
+audit_*.txt
+audit_*.csv
+diagnostic_*.png
+diagnostic_*.txt
+*.log
+
+# --- Catalogue Gutenberg (volumineux, téléchargeable) ---
+pg_catalog.csv
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Docker images / volumes locaux ---
+*.tar
+*.tar.gz
