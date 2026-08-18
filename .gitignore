@@ -46,12 +46,19 @@ diagnostic_*.txt
 # --- Catalogue Gutenberg (volumineux, téléchargeable) ---
 pg_catalog.csv
 
-# --- IDE / OS ---
+# --- Enonce du projet (document de cours, pas un livrable du depot) ---
+# Volontairement pas `*.pdf` : le rapport final sera un PDF et devra, lui,
+# etre suivi.
+BC02 - Projet - 2.pdf
+
+# --- IDE / OS / outillage local ---
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 *.swp
+# Index CodeGraph : regenerable, propre a la machine.
+.codegraph/
 
 # --- Docker images / volumes locaux ---
 *.tar
