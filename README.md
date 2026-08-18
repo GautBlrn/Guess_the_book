@@ -19,11 +19,14 @@ projet/
     pipeline_full.py       # raw -> clean -> tokens -> annotations en une fonction
     corpus.py              # charger_corpus, trouver_livre
     abstractive.py         # produit les résumés
+    evaluation.py          # métriques : rangs (Precision@k, MRR), ROUGE, BLEU
+    benchmark.py           # orchestration des expériences (jeu de test, boucles, tableaux)
 
   scripts/                 # entrées CLI
     upload_corpus.py       # upload initial de N livres tires au hasard
     add_book.py            # ajoute un livre Gutenberg (recherche par titre/auteur)
     rebuild_artifacts.py   # regenere TF-IDF + Word2Vec + resumes globaux
+    run_benchmark.py       # lance les experiences d'evaluation, exporte les CSV
 
   notebooks/               # narration / exploration / validation
     01_clean_book.ipynb       # nettoyage
@@ -33,6 +36,10 @@ projet/
     05_tfidf_similarity.ipynb # representations TF-IDF + benchmark
     06_embeddings_pca.ipynb   # Word2Vec, fastText, PCA, t-SNE, UMAP
     07_summary_mmr.ipynb      # resume extractif MMR
+
+  tests/                   # suite pytest
+    test_evaluation.py     # metriques recherche + ROUGE / BLEU vs implementations de reference
+    test_benchmark.py      # orchestration, sur corpus synthetique (ni S3 ni camembert)
 
   app/                     # application Streamlit interactive
     Home.py                # identification d'un livre depuis un extrait
@@ -48,12 +55,29 @@ projet/
 
 ## Installation
 
+**Python 3.12 obligatoire.** C'est la version du `Dockerfile` (`python:3.12-slim`), et surtout le plafond de la stack : `gensim` et `spacy` ne publient pas de wheel au-delà de cp313, `tokenizers` encore moins. Sur une version plus récente, pip retombe sur une compilation depuis les sources qui échoue (le C généré par Cython accède à `PyLongObject.ob_digit`, champ déplacé par CPython 3.12).
+
+Si `python3.12` n'est pas dans les dépôts de ta distribution (cas d'Ubuntu 26.04) :
+
 ```bash
-python -m venv .venv
+sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.12 python3.12-venv
+```
+
+```bash
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download fr_core_news_sm
 ```
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+
+`tests/test_evaluation.py` couvre les métriques de `pipeline/evaluation.py`. Les métriques faites main y sont comparées à `rouge-score` (implémentation Google) pour ROUGE et à `nltk` pour BLEU. Ces deux paquets ne servent que de référence de test et ne sont jamais importés par `pipeline/` : sans eux la suite reste verte, les tests de comparaison sont simplement sautés.
 
 Récupérer le catalogue Gutenberg (une fois) :
 
@@ -102,6 +126,28 @@ Le script :
 4. telecharge depuis Gutenberg
 5. passe le livre par le pipeline complet (raw -> clean -> tokens -> annotations)
 6. avec `--rebuild` : regenere les matrices TF-IDF, Word2Vec et resumes MMR pour integrer le nouveau livre au benchmark
+
+## Évaluation
+
+```bash
+# Recherche seule : quelques secondes, ne charge pas camembert
+python -m scripts.run_benchmark --skip-resumes
+
+# Essai rapide de la chaîne complète sur 3 livres avant le corpus entier
+python -m scripts.run_benchmark --limite 3
+
+# Tout, plus l'effet de lambda sur le compromis pertinence/diversité
+python -m scripts.run_benchmark --balayer-lambda
+```
+
+Les CSV sortent dans `resultats/` (ignoré par git) : `recherche.csv` (une ligne par représentation x métrique), `recherche_courbes.csv` (Rappel@k en format long pour le graphique), `resumes.csv` et `lambda.csv`.
+
+Deux régimes de coût très différents. La partie recherche ne touche ni torch ni CamemBERT. La partie résumé encode chaque phrase candidate, donc télécharge ~440 Mo au premier lancement puis compte quelques secondes par livre sur CPU.
+
+Deux points à garder en tête en lisant les chiffres, tous les deux détaillés dans les commentaires de `pipeline/benchmark.py` :
+
+- les extraits sont tirés des livres qui sont eux-mêmes indexés, donc l'extrait est contenu dans le document cible. Les scores de recherche sont mécaniquement hauts et ne se transposent pas à un livre absent du corpus.
+- ROUGE est calculé contre le texte intégral faute de résumés de référence. Dans ce montage la précision vaut ~1 pour toute méthode extractive et le rappel ne dépend que de la longueur : ROUGE ne classe pas les méthodes. Ce sont les colonnes `redondance` et `couverture` qui les séparent.
 
 ## App interactive (Streamlit)
 

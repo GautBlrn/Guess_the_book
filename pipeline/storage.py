@@ -86,6 +86,20 @@ def list_objects(prefix, bucket=BUCKET, suffix=None):
     return objets
 
 
+# --- Suppression ---
+
+def delete_object(key, bucket=BUCKET):
+    """
+    Supprime un objet S3. IRREVERSIBLE si le versioning est desactive.
+
+    Volontairement unitaire : pas de suppression par prefixe ni par lot.
+    Un appelant qui veut effacer plusieurs cles doit les enumerer, donc
+    les avoir construites explicitement. Une API `delete_prefix` rendrait
+    trop facile d'effacer tout `summaries/` sur une faute de frappe.
+    """
+    get_client().delete_object(Bucket=bucket, Key=key)
+
+
 # --- Ecriture ---
 
 def put_text(key, contenu, bucket=BUCKET, content_type="text/plain; charset=utf-8",

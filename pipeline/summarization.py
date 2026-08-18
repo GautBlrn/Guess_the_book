@@ -304,8 +304,14 @@ def score_hybride(phrases, matrice_tfidf, emb_camembert, poids=None):
     Pas de score de position : sur un roman, l'incipit et le denouement
     sont souvent autant signifiants que le milieu.
 
-    `poids` : dict avec cles `centre`, `textrank`, `longueur`. Doit
-    sommer a 1. Defaut depuis EMB_PARAMS.
+    `poids` : dict avec cles `centre`, `textrank`, `longueur`. Defaut
+    depuis EMB_PARAMS.
+
+    La somme des poids n'a pas a valoir 1, et le defaut livre vaut
+    d'ailleurs 1.05 (0.70 + 0.30 + 0.05). Seul le score RELATIF entre
+    phrases est utilise, par MMR puis par le tri : multiplier tous les
+    poids par une constante ne change aucun classement. Ce sont les
+    rapports entre composantes qui comptent.
     """
     if poids is None:
         poids = EMB_PARAMS["poids_score"]
@@ -367,7 +373,7 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
                   min_tokens=None, max_tokens=None, min_df=None,
                   min_densite=None, max_propn_ratio=None,
                   ordre_narratif=False,
-                  embeddings_pre=None):
+                  embeddings_pre=None, poids=None):
     """
     Bout-en-bout : DataFrame annote -> liste de phrases selectionnees.
 
@@ -385,6 +391,17 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
         Embeddings camembert deja calcules pour les phrases candidates.
         Permet de reutiliser le calcul cote app/script entre plusieurs
         appels (ex. quand l'utilisateur change lambda).
+    poids : dict, optionnel
+        Ponderation du score hybride (cles `centre`, `textrank`,
+        `longueur`). Defaut : `EMB_PARAMS["poids_score"]`.
+
+        Existe pour que `pipeline/benchmark.py` puisse balayer la
+        ponderation sans monkeypatcher la config : le benchmark doit
+        mesurer cette fonction-ci, pas une reimplementation locale. La
+        mesure appariee sur 26 livres montre que le poids TextRank de
+        0.30 rend MMR plus redondant que le simple top-k TF-IDF
+        (7 livres sur 26, test des signes p = 0.029), donc ce parametre
+        n'est pas theorique : c'est le levier a explorer.
 
     Renvoie : liste de dicts avec les memes cles que `extraire_phrases`,
     enrichies de `score` (score hybride final) et `rang_mmr` (rang de
@@ -422,7 +439,7 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
         emb_cam = _encoder_phrases([p["texte"] for p in phrases])
 
     # 3. Score hybride
-    scores = score_hybride(phrases, matrice_tfidf, emb_cam)
+    scores = score_hybride(phrases, matrice_tfidf, emb_cam, poids=poids)
 
     # 4. MMR sur camembert
     indices = mmr(emb_cam, scores, k=k, lambda_=lambda_)

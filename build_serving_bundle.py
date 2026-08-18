@@ -46,11 +46,40 @@ from pipeline.representations import TfIdfMaison
 
 
 # --- Config par defaut du bundle ---
-# Cette config est issue du benchmark dans les notebooks d'exploration :
-# `lemmes_1g` + cosinus = 99.2 % top-1 sur le corpus actuel. Tout autre
-# reglage est moins bon, donc l'app deployee n'expose pas ce choix.
+# `lemmes_12g` + cosinus, avec le min_df=1 de TFIDF_PARAMS.
+#
+# Mesure sur 520 extraits de LONGUEUR VARIABLE (plage 7-70 termes, mediane
+# 38, soit ~108 mots colles), ce qui est le regime reel de l'app :
+#
+#     lemmes_1g   : 87.50 % top-1,  38 k termes,   7,9 Mo
+#     lemmes_12g  : 97.88 % top-1, 734 k termes, 152,7 Mo
+#
+# Soit 10,4 points pour 145 Mo. L'arbitrage precedent retenait `lemmes_1g`,
+# mais il reposait sur des extraits fixes de 200 termes, ou l'ecart n'etait
+# que de 1,2 point (98.46 contre 99.62). Or 200 termes informatifs valent
+# ~573 mots colles, presque le double du maximum de l'app : ce protocole ne
+# mesurait jamais le regime de production. Un extrait court contient peu
+# d'unigrammes, donc la preuve apportee par les bigrammes y pese
+# proportionnellement bien plus -- d'ou l'ecart qui explose quand on mesure
+# ce que les utilisateurs collent vraiment.
+#
+# ATTENTION : la matrice est DENSE (`TfIdfMaison.fit_transform` fait un
+# `toarray()`) et le vocabulaire croit avec le corpus, donc la memoire
+# grimpe en gros comme N^2. 153 Mo a 26 livres, plusieurs Go a 100. Passer
+# `TfIdfMaison` en csr_matrix est le prerequis a toute croissance du corpus
+# avec cette config.
+#
+# `tokens_12g` fait 98.08 %, soit un extrait de plus sur 520 : ecart non
+# significatif, on reste sur les lemmes.
+#
+# Le choix du cosinus plutot que de l'euclidien est cosmetique : sur des
+# vecteurs L2-normalises les deux donnent le MEME classement (cf. le
+# commentaire de section dans pipeline/benchmark.py et la conclusion du
+# notebook 05).
+#
+# Reproduire : python -m scripts.run_benchmark --skip-resumes
 DEFAULT_CHAMP = "lemmes"
-DEFAULT_NGRAM_MAX = 1
+DEFAULT_NGRAM_MAX = 2
 DEFAULT_METRIQUE = "cosinus"
 
 

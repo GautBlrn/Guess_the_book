@@ -35,6 +35,7 @@ models/
 figures/
 
 # --- Sorties de scripts ---
+resultats/
 audit_*.png
 audit_*.txt
 audit_*.csv

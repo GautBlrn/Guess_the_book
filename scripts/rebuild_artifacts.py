@@ -16,6 +16,12 @@ Usage :
     python -m scripts.rebuild_artifacts
     python -m scripts.rebuild_artifacts --skip-w2v       # plus rapide
     python -m scripts.rebuild_artifacts --skip-summaries # juste TF-IDF + Word2Vec
+
+Les resumes orphelins (restes d'un changement de genre : la cle S3 encode
+le genre, donc un override deplace le resume sans effacer l'ancien) sont
+listes a chaque run et supprimes seulement sur demande :
+
+    python -m scripts.rebuild_artifacts --nettoyer-orphelins
 """
 import argparse
 import io
@@ -27,7 +33,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline import storage
-from pipeline.config import MMR_PARAMS, PREFIXES, TFIDF_PARAMS, W2V_PARAMS
+from pipeline.config import (
+    MMR_PARAMS, PREFIXES, TFIDF_CONFIGS, TFIDF_PARAMS, W2V_PARAMS,
+)
 from pipeline.corpus import charger_corpus
 from pipeline.parsing import construire_cle
 from pipeline.representations import TfIdfMaison
@@ -41,16 +49,19 @@ def parser_args():
     p.add_argument("--skip-tfidf",     action="store_true")
     p.add_argument("--skip-w2v",       action="store_true")
     p.add_argument("--skip-summaries", action="store_true")
+    p.add_argument("--nettoyer-orphelins", action="store_true",
+                   help="Supprime les resumes S3 qui ne correspondent a aucun "
+                        "livre du corpus (restes d'un changement de genre). "
+                        "Sans ce flag, ils sont seulement listes.")
     return p.parse_args()
 
 
 # --- TF-IDF ---
 
-CONFIGS_TFIDF = {
-    "lemmes_1g":  {"champ": "lemmes", "ngram_max": 1},
-    "lemmes_12g": {"champ": "lemmes", "ngram_max": 2},
-    "tokens_12g": {"champ": "tokens", "ngram_max": 2},
-}
+# Les configs vivent dans pipeline/config.py : pipeline/benchmark.py evalue
+# la meme liste, et une seule source evite que le rapport decrive des
+# representations qui ne sont pas celles qu'on sert.
+CONFIGS_TFIDF = TFIDF_CONFIGS
 
 
 def construire_tfidf(corpus, params=None):
@@ -176,6 +187,100 @@ def construire_resumes(corpus):
         print(f"  {c['auteur']:35s} -> {cle}")
 
 
+# --- Nettoyage des resumes orphelins ---
+
+def cles_resumes_attendues(corpus):
+    """Cles S3 des resumes du corpus courant. Meme construction que l'ecriture."""
+    return {
+        construire_cle(
+            PREFIXES["summaries"], c["genre"], c["auteur_slug"], c["livre_slug"], ".txt"
+        )
+        for c in corpus
+    }
+
+
+def nettoyer_resumes_orphelins(corpus, appliquer=False):
+    """
+    Signale (et supprime si `appliquer`) les resumes sans livre correspondant.
+
+    D'ou viennent les orphelins : la cle S3 d'un resume encode le GENRE
+    (`summaries/<genre>/<auteur>/<livre>.txt`). Ajouter une entree dans
+    `GENRE_OVERRIDES`, ou voir Gutenberg reclasser un livre, deplace donc
+    le resume sans effacer l'ancien. Un livre retire du corpus laisse
+    pareillement le sien derriere lui.
+
+    TROIS GARDE-FOUS, parce que la fonction supprime des donnees a partir
+    d'un raisonnement par difference, et qu'un raisonnement par difference
+    devient destructeur des que l'un des deux ensembles est faux :
+
+    1. Un corpus vide bloque tout. Sans ce test, un `charger_corpus` qui
+       ne renvoie rien (bucket mal configure, prefixe vide) ferait passer
+       TOUS les resumes pour des orphelins.
+    2. Un resume ATTENDU mais absent de S3 bloque la suppression. C'est le
+       cas dangereux et il n'a rien d'exotique : `--skip-summaries` apres
+       un ajout dans `GENRE_OVERRIDES` laisse l'ancienne cle en place et
+       la nouvelle jamais ecrite. Supprimer "l'orphelin" laisserait alors
+       le livre SANS AUCUN resume. On n'efface l'ancien etat que si le
+       nouveau est integralement en place.
+    3. Plus d'orphelins que de resumes attendus bloque aussi. Ce ratio ne
+       peut pas arriver en fonctionnement normal, ou les orphelins sont
+       quelques restes de reclassement ; il signale un corpus charge
+       partiellement.
+
+    Les garde-fous 2 et 3 refusent la suppression sans lever : le rebuild
+    doit finir son travail (index, matrices) meme si le nettoyage est
+    juge trop risqué. Seul le corpus vide leve, parce que c'est une erreur
+    d'appel et non une situation de donnees.
+
+    Ne supprime jamais sans `appliquer=True`, meme quand tout est sain :
+    le defaut est de lister, l'effacement se demande explicitement.
+    """
+    if not corpus:
+        raise ValueError(
+            "Corpus vide : refus de nettoyer. Tous les resumes seraient "
+            "vus comme orphelins."
+        )
+
+    attendues = cles_resumes_attendues(corpus)
+    presentes = {
+        o["Key"] for o in storage.list_objects(PREFIXES["summaries"], suffix=".txt")
+    }
+    orphelins = sorted(presentes - attendues)
+
+    if not orphelins:
+        print(f"  aucun orphelin ({len(presentes)} resumes pour {len(corpus)} livres)")
+        return []
+
+    manquantes = attendues - presentes
+    if manquantes:
+        print(f"  {len(orphelins)} orphelin(s) detecte(s), mais "
+              f"{len(manquantes)} resume(s) attendu(s) manquent sur S3 :")
+        for cle in sorted(manquantes)[:5]:
+            print(f"    absent : {cle}")
+        print("  REFUS de supprimer : les orphelins sont peut-etre la seule "
+              "copie restante. Relance sans --skip-summaries d'abord.")
+        return orphelins
+
+    if len(orphelins) > len(attendues):
+        print(f"  REFUS de supprimer : {len(orphelins)} orphelins pour "
+              f"{len(attendues)} resumes attendus. Ce ratio signale un corpus "
+              "charge partiellement, pas un reclassement. Verifie le corpus.")
+        return orphelins
+
+    print(f"  {len(orphelins)} orphelin(s) sur {len(presentes)} resumes :")
+    for cle in orphelins:
+        print(f"    {cle}")
+
+    if not appliquer:
+        print("  (rien supprime : relance avec --nettoyer-orphelins)")
+        return orphelins
+
+    for cle in orphelins:
+        storage.delete_object(cle)
+        print(f"    supprime : {cle}")
+    return orphelins
+
+
 # --- Main ---
 
 def main():
@@ -197,6 +302,13 @@ def main():
         print("--- Resumes MMR ---")
         construire_resumes(corpus)
         print()
+
+    # Apres l'ecriture des resumes : les cles fraiches doivent etre en
+    # place avant de calculer la difference, sinon celles du run courant
+    # passeraient pour des orphelins.
+    print("--- Resumes orphelins ---")
+    nettoyer_resumes_orphelins(corpus, appliquer=args.nettoyer_orphelins)
+    print()
 
     print("--- Index ---")
     construire_index(corpus)
