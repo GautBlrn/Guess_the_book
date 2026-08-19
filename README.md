@@ -70,6 +70,12 @@ pip install -r requirements.txt
 python -m spacy download fr_core_news_sm
 ```
 
+## Documentation
+
+- [docs/fonctionnement.md](docs/fonctionnement.md) : architecture, pipeline, mécanismes, écarts connus entre ce README et le code
+- [docs/guide_test.md](docs/guide_test.md) : comment vérifier que tout marche, du pytest au conteneur Docker
+- [docs/evaluation.md](docs/evaluation.md) : ce qui est mesuré et ce que les mesures ont changé
+
 ## Tests
 
 ```bash
