@@ -11,6 +11,7 @@ projet/
     storage.py             # client S3 + helpers I/O
     parsing.py             # slugifier, parser_chemin, auteur_principal
     gutenberg.py           # recherche dans le catalogue + téléchargement
+    collecte.py            # selection stratifiee + portes de validation a l'entree
     cleaning.py            # nettoyer() : enlève en-têtes/pieds Gutenberg
     tokenization.py        # tokeniser() : spaCy blank fr + normalisation typo
     annotation.py          # annoter() : POS, lemmes, frontières de phrases
@@ -23,7 +24,8 @@ projet/
     benchmark.py           # orchestration des expériences (jeu de test, boucles, tableaux)
 
   scripts/                 # entrées CLI
-    upload_corpus.py       # upload initial de N livres tires au hasard
+    collect_corpus.py      # monte un corpus de N centaines de livres par quotas de genre
+    upload_corpus.py       # upload initial de N livres tires au hasard (petits corpus)
     add_book.py            # ajoute un livre Gutenberg (recherche par titre/auteur)
     rebuild_artifacts.py   # regenere TF-IDF + Word2Vec + resumes globaux
     run_benchmark.py       # lance les experiences d'evaluation, exporte les CSV
@@ -40,6 +42,11 @@ projet/
   tests/                   # suite pytest
     test_evaluation.py     # metriques recherche + ROUGE / BLEU vs implementations de reference
     test_benchmark.py      # orchestration, sur corpus synthetique (ni S3 ni camembert)
+    test_representations.py# TF-IDF creux : contrat, equivalence dense, sklearn
+    test_collecte.py       # portes de validation + selection stratifiee
+    test_parsing.py        # slugs et cles S3 (ligatures, aller-retour)
+    test_cleaning.py       # decorations finales : terminaison et comportement
+    test_rebuild_artifacts.py # refus de nettoyage des resumes orphelins
 
   app/                     # application Streamlit interactive
     Home.py                # identification d'un livre depuis un extrait
@@ -83,7 +90,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-`tests/test_evaluation.py` couvre les métriques de `pipeline/evaluation.py`. Les métriques faites main y sont comparées à `rouge-score` (implémentation Google) pour ROUGE et à `nltk` pour BLEU. Ces deux paquets ne servent que de référence de test et ne sont jamais importés par `pipeline/` : sans eux la suite reste verte, les tests de comparaison sont simplement sautés.
+`tests/test_evaluation.py` couvre les métriques de `pipeline/evaluation.py`. Les métriques faites main y sont comparées à `rouge-score` (implémentation Google) pour ROUGE et à `nltk` pour BLEU. `tests/test_representations.py` applique le même principe au TF-IDF, comparé à `sklearn.TfidfVectorizer`. Ces paquets ne servent que de référence de test et ne sont jamais importés par `pipeline/` : sans eux la suite reste verte, les tests de comparaison sont simplement sautés.
 
 Récupérer le catalogue Gutenberg (une fois) :
 
@@ -99,6 +106,38 @@ cp .env.example .env
 ```
 
 ## Première utilisation : monter le corpus
+
+### Corpus à l'échelle (quelques centaines de livres)
+
+```bash
+# 1. Voir ce qui serait collecté, sans rien télécharger
+python -m scripts.collect_corpus --n-par-genre 20 --dry-run
+
+# 2. Collecter et passer chaque livre par le pipeline complet
+python -m scripts.collect_corpus --n-par-genre 20 --pipeline
+
+# 3. Générer les artefacts globaux (TF-IDF, Word2Vec, resumes MMR)
+python -m scripts.rebuild_artifacts
+```
+
+`collect_corpus` tire jusqu'à `--n-par-genre` livres dans **chacun** des 16
+genres du catalogue, au lieu d'un tirage uniforme qui recopierait le
+déséquilibre du catalogue (710 romans contre 42 livres de mythologie sur
+3127 livres FR éligibles). Chaque texte téléchargé passe quatre portes de
+validation avant d'entrer : taille, langue réelle du corps du texte,
+nettoyage effectif, taille après nettoyage. Le détail du pourquoi de chaque
+porte est dans `pipeline/collecte.py`, les seuils dans `COLLECTE_PARAMS`.
+
+Le script est **reprenable** : les livres déjà présents sous `raw/` sont
+sautés, identifiés par leur identifiant Gutenberg et non par leur slug (les
+titres du catalogue changent, un slug recalculé ne retombe pas toujours sur
+celui qui est stocké, et re-télécharger créerait un doublon qui fausserait
+l'IDF). Une collecte interrompue se relance avec la même commande.
+
+Compter environ 2 h pour 320 livres avec `--pipeline`, l'essentiel étant
+l'annotation spaCy, et quelques minutes sans.
+
+### Petit corpus
 
 ```bash
 # 1. Tirer N livres au hasard du catalogue et les uploader sous raw/
@@ -198,5 +237,8 @@ notebook avec un dict `CFG`.
 - **Le pipeline ne nettoie pas dans `upload_corpus`.** Le brut est conserve tel quel sous `raw/`. Le nettoyage est isole dans `clean_book.ipynb` -> `clean/`. On peut re-nettoyer sans retelecharger.
 - **`get_client()` est mis en cache (`lru_cache`)** : un seul client S3 par processus.
 - **`ensure_bucket()` est explicite** (pas d'effet de bord a l'import). A appeler une fois.
-- **`TfIdfMaison` couvre livres et phrases** (anciens `TfIdfMaison` + `TfIdfPhrases` fusionnes). Conventions sklearn (smoothing IDF, normalisation L2). Validation contre `sklearn.TfidfVectorizer` dans le notebook 05.
+- **`TfIdfMaison` couvre livres et phrases** (anciens `TfIdfMaison` + `TfIdfPhrases` fusionnes). Conventions sklearn (smoothing IDF, normalisation L2). Validation contre `sklearn.TfidfVectorizer` dans le notebook 05 et dans `tests/test_representations.py`.
+- **La matrice TF-IDF est creuse**, et c'est ce qui rend le corpus extensible. En dense, la config servie coûterait 11,8 Go à 291 livres. Le changement est numériquement neutre : le benchmark rejoué avec les deux implémentations rend des tableaux strictement égaux. Chiffres et méthode dans [docs/evaluation.md](docs/evaluation.md), section 6. Seul `summarization.vectoriser_phrases_tfidf` densifie, parce qu'il travaille sur les phrases d'un seul livre et que le calcul MMR en aval est dense.
+- **La config servie est `tokens_12g` + cosinus, `min_df=1`.** Les trois arbitrages (bigrammes contre unigrammes, tokens contre lemmes, `min_df` 1 contre 2) sont tranchés par des tests appariés McNemar et Wilcoxon sur 1455 extraits, pas par comparaison de taux agrégés. Le détail est dans [docs/evaluation.md](docs/evaluation.md), section 2, et se rejoue avec `python -m scripts.tests_apparies`.
+- **`charger_corpus(with_df=False)` et `iter_corpus()`** pour ne pas tenir 300 DataFrames annotés en mémoire (3,2 Mo par livre). `n_tokens` et `n_phrases` restent disponibles, calculés au chargement.
 - **Les notebooks importent du package** plutot que de redefinir les fonctions. Pour les modifier, on edite `pipeline/`, pas le notebook.

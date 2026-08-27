@@ -62,19 +62,73 @@ clean/adventure/dumas_alexandre/pg17990_le_comte_de_monte_cristo_tome_ii.txt
 Le `livre_slug` porte l'identifiant Gutenberg en préfixe (`pg17990_`), ce
 qui garantit l'unicité même si deux éditions portent le même titre.
 
-État actuel du corpus, tel que servi par l'API :
+État actuel du corpus :
 
-| grandeur | valeur |
-|---|---|
-| livres | 26 |
-| auteurs | 23 |
-| genres | 9 (novel 5, biography 5, historical_fiction 4, adventure 3, philosophy 3, poetry 3, romance 1, scifi_fantasy 1, travel 1) |
-| tokens | 2 719 190 |
-| phrases | 137 244 |
+| grandeur | valeur | corpus initial |
+|---|---|---|
+| livres | 291 | 26 |
+| auteurs | 221 | 23 |
+| genres | 16 | 9 |
+| tokens | 19 925 564 | 2 719 190 |
+| phrases | 997 851 | 137 244 |
+
+Répartition par genre, une fois la collecte stratifiée passée :
+
+```
+novel 23, biography 22, historical_fiction 21, philosophy 20, mystery 19,
+travel 19, adventure 18, mythology 18, romance 18, short_stories 18,
+drama 17, scifi_fantasy 17, essays 16, humour 16, children 15, poetry 14
+```
+
+De 14 à 23 livres par genre, quand le catalogue Gutenberg dont ils sortent
+compte 710 romans pour 42 livres de mythologie. C'est l'objet du quota par
+genre de `scripts/collect_corpus.py` : la difficulté d'identification vient
+des voisins proches, donc d'un corpus qui contient plusieurs livres du même
+registre, pas d'un corpus qui en contient beaucoup au total.
+
+Le corpus initial de 26 livres reste en colonne de droite parce que la
+plupart des mesures d'arbitrage documentées dans `docs/evaluation.md` ont
+été prises dessus et n'ont pas encore été rejouées à cette échelle.
 
 Le genre vient des Bookshelves Gutenberg, mappés par `GENRE_MAPPING`.
 `GENRE_OVERRIDES` corrige au runtime les oeuvres en plusieurs tomes que
 Gutenberg range différemment d'un tome à l'autre (le cas Monte-Cristo).
+
+### Les accès S3 reprennent sur incident réseau
+
+Charger le corpus, c'est un GET par livre, en série. À 26 livres une
+coupure passagère était improbable et sans conséquence. À 300, chaque
+chargement enchaîne 300 requêtes, et une seule qui échoue faisait perdre
+toutes les précédentes : c'est arrivé sur un `ReadTimeoutError` au milieu
+d'un chargement de 291 livres.
+
+`storage._lire_corps` réémet donc la requête, jusqu'à `max_tentatives`
+fois, avec une attente qui double à chaque essai. Deux points méritent
+d'être connus :
+
+**Pourquoi la reprise de botocore ne suffit pas.** `ReadTimeoutError` est
+levée pendant `Body.read()`, c'est-à-dire après que botocore a rendu la
+main sur la requête. Sa couche de réessai n'a plus prise, et le flux est
+mort : il faut refaire le GET entier, pas relire le corps. La configuration
+`retries` du client reste utile, mais seulement pour ce qui échoue avant
+que la réponse commence à arriver.
+
+**Ce qui n'est pas rejoué.** Une clé absente, un refus d'authentification,
+tout ce qui n'est pas un incident serveur remonte immédiatement. Les rejouer
+cinq fois ne ferait que retarder un message d'erreur exact. Le tri se fait
+dans `_est_transitoire` : erreurs réseau, plus les codes S3 d'incident
+serveur et tout statut 5xx.
+
+Les seuils vivent dans `S3_PARAMS` de `pipeline/config.py`, et
+`tests/test_storage.py` couvre les deux comportements sans toucher au
+réseau.
+
+### Le chargement rend compte de son avancement
+
+`charger_corpus` et `iter_corpus` affichent une ligne tous les
+`PAS_PROGRESSION` livres, avec le débit et une estimation du temps
+restant. Sur un corpus de quelques centaines de livres, un chargement
+silencieux de plusieurs minutes est indistinguable d'un blocage.
 
 ## 4. Le pipeline de traitement
 

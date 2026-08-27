@@ -71,15 +71,109 @@ et les fréquences.
 
 ### Résultats
 
-520 extraits, 26 livres, longueur tirée dans la plage 7-70 termes
-informatifs (médiane 38, soit environ 108 mots collés), `min_df=1`,
-cosinus.
+1455 extraits, 291 livres, longueur tirée dans la plage 7-70 termes
+informatifs, `min_df=1`, cosinus.
 
-| représentation | top-1 | @3 | @5 | @10 | MRR |
+| représentation | vocabulaire | top-1 | @3 | @5 | @10 | MRR |
+|---|---|---|---|---|---|---|
+| lemmes_1g | 143 882 | 70,31 % | 84,26 % | 88,52 % | 92,92 % | 0,785 |
+| lemmes_12g | 4 144 734 | 92,65 % | 98,97 % | 99,59 % | 100 % | 0,958 |
+| tokens_12g | 5 048 963 | **93,95 %** | 99,24 % | 99,73 % | 100 % | **0,965** |
+
+Jaccard reste très en retrait, et l'écart se creuse avec le corpus :
+28,18 % de top-1 en `lemmes_1g` contre 70,31 % pour le cosinus, avec un
+rang médian de 5. Jeter les poids IDF coûte d'autant plus cher qu'il y a
+de livres entre lesquels trancher.
+
+### Ce que le passage à 291 livres a changé
+
+Pour mémoire, les mêmes mesures sur le corpus de 26 livres (520 extraits) :
+
+| représentation | top-1 à 26 livres | top-1 à 291 livres | écart |
+|---|---|---|---|
+| lemmes_1g | 87,50 % | 70,31 % | -17,2 pts |
+| lemmes_12g | 97,88 % | 92,65 % | -5,2 pts |
+| tokens_12g | 98,08 % | 93,95 % | -4,1 pts |
+
+**La baisse était l'issue attendue**, et c'est un résultat, pas une
+régression : identifier un livre parmi 291 est plus difficile que parmi 26.
+Un corpus plus grand ne rend pas le système meilleur, il rend la mesure
+honnête.
+
+**Le benchmark a cessé de saturer**, ce qui était l'objectif principal. À
+26 livres, Rappel@3, @5 et @10 valaient tous 1,0 pour les deux configs
+bigrammes : la courbe demandée par le sujet était plate et les configs
+indistinguables au-delà du rang 1. `lemmes_1g` donne maintenant une vraie
+courbe, de 0,703 à 0,929 sur dix rangs. Les configs bigrammes saturent
+encore, mais seulement à partir du rang 8.
+
+**L'écart entre unigrammes et bigrammes a explosé**, et c'est le résultat
+le plus utile. Il valait 10,4 points à 26 livres, il en vaut **22,3** à
+291. Le choix de servir une config bigrammes reposait sur un écart mesuré
+dans un régime saturé ; il repose maintenant sur un écart franc, mesuré sur
+1455 extraits. La raison est mécanique : un unigramme discriminant dans un
+corpus de 26 livres ne l'est plus dans 291, alors qu'un bigramme reste
+presque unique quelle que soit la taille du corpus.
+
+**Le vocabulaire a grossi comme prévu**, de 734 k à 4,1 M de termes pour
+`lemmes_12g`. Une matrice dense pèserait ici 291 × 4 144 734 × 8 octets,
+soit **9,7 Go**, et 11,8 Go pour `tokens_12g`. Le calcul n'aurait pas
+tourné. C'est la justification du passage au creux, vérifiée en vraie
+grandeur plutôt qu'extrapolée.
+
+À noter que l'extrapolation par loi de Heaps annonçait 8,3 M de termes à
+300 livres, contre 4,1 M mesurés à 291 : elle surestimait d'un facteur 2,
+l'exposant ayant été ajusté sur des corpus de 8 à 26 livres où le
+vocabulaire croît plus vite qu'il ne le fait ensuite.
+
+### Tests appariés entre représentations
+
+Les taux agrégés ci-dessus ne suffisent pas à départager deux
+représentations. Comparer 93,95 % et 92,65 % avec un test de proportions
+supposerait deux échantillons indépendants, alors que c'est le **même** jeu
+de 1455 extraits qui passe dans les deux, et que `tirer_extraits` fournit
+les deux champs du **même passage**. Ignorer l'appariement jette
+l'information la plus utile : deux représentations qui échouent sur les
+mêmes extraits difficiles ne diffèrent pas vraiment, même si l'écart
+agrégé paraît grand.
+
+Deux tests, qui ne voient pas la même chose. **McNemar** exact (test
+binomial sur les paires discordantes) ne regarde que le succès au rang 1,
+et ne compte que les extraits où les deux configurations diffèrent.
+**Wilcoxon** sur les rangs réciproques utilise davantage : passer du rang 9
+au rang 2 compte, alors que McNemar l'ignore.
+
+Seuil 0,05 ajusté à 0,0167 par Bonferroni pour trois comparaisons.
+
+| comparaison | écart top-1 | A gagne | B gagne | p (McNemar) | p (Wilcoxon) |
 |---|---|---|---|---|---|
-| lemmes_1g | 87,50 % | 95,38 % | 98,08 % | 99,04 % | 0,919 |
-| lemmes_12g | 97,88 % | 100 % | 100 % | 100 % | 0,989 |
-| tokens_12g | 98,08 % | 100 % | 100 % | 100 % | 0,990 |
+| `tokens_12g` vs `lemmes_12g` | +1,31 pts | 25 | 6 | 8,8 × 10⁻⁴ | 1,6 × 10⁻⁴ |
+| `lemmes_12g` vs `lemmes_1g` | +22,34 pts | 328 | 3 | 2,8 × 10⁻⁹³ | 3,5 × 10⁻⁶⁶ |
+| `lemmes_12g` vs `min_df=2` | +10,03 pts | 150 | 4 | 2,0 × 10⁻³⁹ | 2,5 × 10⁻³² |
+
+Les trois sont significatives, et les deux tests concordent à chaque fois.
+
+**`tokens_12g` bat `lemmes_12g`, et ce n'est plus discutable.** À 26 livres
+l'écart valait un extrait sur 520 et avait été jugé non concluant, à juste
+titre. À 291 livres il porte sur 31 paires discordantes réparties 25 contre
+6, ce qui ne s'explique pas par le hasard. Le bundle servi utilise
+aujourd'hui `lemmes_12g` : **il devrait passer à `tokens_12g`**, au prix
+d'un vocabulaire 22 % plus gros (5,0 M contre 4,1 M de termes).
+
+L'interprétation est cohérente avec le reste : la lemmatisation normalise
+les formes fléchies, ce qui aide à rapprocher deux occurrences d'un même
+mot mais efface aussi des indices. Sur une tâche d'identification, la forme
+exacte employée par l'auteur est elle-même une signature.
+
+**`min_df = 1` se justifie mieux à 291 livres qu'à 26**, ce qui n'allait
+pas de soi. Le réglage coûtait 1,5 point de top-1 à 26 livres ; il en
+rapporte **10,03** à 291. Autrement dit, plus le corpus grandit, plus les
+termes rares deviennent l'indice décisif, exactement l'argument qui avait
+motivé le choix. Le prix reste le vocabulaire : 4,1 M de termes contre
+773 k à `min_df = 2`, soit un facteur 5,4 en mémoire et en temps de calcul
+pour ces 10 points.
+
+Reproduction : `python -m scripts.tests_apparies`
 
 ### Le biais à écrire noir sur blanc
 
@@ -177,18 +271,56 @@ miroir. TextRank apporte la centralité thématique ; sans lui MMR choisit
 des phrases mutuellement dissemblables mais individuellement peu
 représentatives.
 
-**Aucune pondération ne rend MMR clairement supérieur au top-k TF-IDF
-naïf sur ces deux critères.** 0,20 est le point de parité : les deux
-tests sont non significatifs dans les deux sens. C'est une parité, pas
-une victoire, et le rapport doit le dire.
+**À 26 livres, aucune pondération ne rendait MMR clairement supérieur au
+top-k TF-IDF naïf sur ces deux critères.** 0,20 était le point de parité :
+les deux tests non significatifs dans les deux sens. Une parité, pas une
+victoire.
 
-Réserves de méthode : dix tests de signes ont été lancés, donc les `p`
-autour de 0,03 sont fragiles à toute correction pour comparaisons
-multiples, ceux à moins de 0,0001 tiennent. Et redondance et couverture
-restent des proxys intrinsèques : ils ne mesurent ni la lisibilité ni la
-cohérence narrative, qui étaient les motivations qualitatives de la
-refonte v4. Un jugement humain sur quelques livres trancherait ce que ces
-deux chiffres ne tranchent pas.
+### Ce que 291 livres ont changé : la parité devient une victoire
+
+Les mêmes comparaisons appariées, rejouées sur 291 livres avec la
+pondération retenue (TextRank à 0,20) et `lambda = 0,6`. Seuil 0,05 ajusté
+à 0,0125 par Bonferroni pour quatre tests.
+
+| comparaison | MMR gagne | diff. moyenne | IC 95 % | p (signes) | p (Wilcoxon) |
+|---|---|---|---|---|---|
+| redondance vs `tfidf_naif` | 196 / 291 | +0,0244 | [+0,0188, +0,0302] | 2,1 × 10⁻⁹ | 2,0 × 10⁻¹⁴ |
+| couverture vs `tfidf_naif` | 179 / 291 | +0,0073 | [+0,0048, +0,0098] | 2,5 × 10⁻⁵ | 8,7 × 10⁻⁸ |
+| redondance vs `textrank` | 290 / 291 | +0,1895 | [+0,1804, +0,1987] | 1,5 × 10⁻⁸⁵ | 3,0 × 10⁻⁴⁹ |
+| couverture vs `textrank` | 142 / 291 | −0,0018 | [−0,0053, +0,0016] | 0,725 | 0,369 |
+
+*(le signe est normalisé : positif signifie toujours que MMR est meilleur)*
+
+**MMR bat `tfidf_naif` sur les deux critères à la fois, et les deux tests
+concordent.** C'est le renversement de la conclusion précédente, et il ne
+vient pas d'un changement de méthode mais du seul passage de 26 à 291
+livres : le mécanisme faisait déjà mieux, l'échantillon ne permettait pas
+de le voir. À n = 26, la couverture donnait 17/26 et `p = 0,169` ; à
+n = 291, la même proportion donne 179/291 et `p = 2,5 × 10⁻⁵`.
+
+**Contre TextRank, le partage est net et instructif.** MMR est moins
+redondant sur 290 livres sur 291, ce qui est écrasant, mais les deux sont
+équivalents en couverture (142 contre 149, intervalle de confiance
+contenant zéro). Autrement dit MMR ne sacrifie rien en représentativité
+pour gagner toute cette diversité, ce qui est exactement le comportement
+attendu d'un terme de diversité bien réglé.
+
+### Significatif ne veut pas dire important
+
+Les intervalles de confiance sont là pour ça, et ils tempèrent. L'avantage
+de couverture sur `tfidf_naif` vaut +0,0073 pour une couverture moyenne de
+0,25, soit **3 % en relatif**. Celui de redondance vaut +0,0244 pour une
+moyenne de 0,40, soit 6 %. Ces écarts sont réels et réguliers, ils ne sont
+pas spectaculaires. Un `p` de 10⁻¹⁴ mesure la certitude que l'écart existe,
+pas sa taille.
+
+Réserves de méthode : redondance et couverture restent des proxys
+intrinsèques. Ils ne mesurent ni la lisibilité ni la cohérence narrative,
+qui étaient les motivations qualitatives de la refonte v4. Un jugement
+humain sur quelques livres trancherait ce que ces deux chiffres ne
+tranchent pas.
+
+Reproduction : `python -m scripts.tests_resumes`
 
 ## 4. Les trois décisions prises
 
@@ -277,25 +409,130 @@ réaliste, `lemmes_1g` donne 87,5 → 95,4 → 98,1 → 99,0.
 Pour retrouver une courbe de difficulté en fonction de la longueur,
 passer un `int` à `tirer_extraits` plutôt que de changer la plage.
 
-### Grossir le corpus n'aiderait pas la recherche
+### Grossir le corpus n'améliore pas le taux de réussite
 
 La mesure de scaling montre qu'à `min_df=1` le top-1 reste entre 97,9 %
 et 99,2 % de 5 à 26 livres, sans tendance. Le paramètre qui gouverne la
-difficulté est la longueur d'extrait, pas le nombre de livres. Passer à
-60 livres servirait uniquement les statistiques du résumé, où
-`p = 0,169` sur la couverture reste non concluant à n = 26.
+difficulté est la longueur d'extrait, pas le nombre de livres.
 
-## 6. Limites connues
+Il faut donc être clair sur ce qu'on attend d'un corpus plus grand, parce
+que ce n'est pas un meilleur score, et que le présenter comme tel serait
+malhonnête. Trois bénéfices réels, aucun n'étant le taux de réussite :
 
-`TfIdfMaison.fit_transform` fait un `toarray()`, donc la matrice est
-dense. Le vocabulaire croît avec le corpus, donc la mémoire grimpe en
-gros comme N². 153 Mo à 26 livres avec `lemmes_12g`, plusieurs Go à 100.
-Passer en `csr_matrix` est le prérequis à toute croissance du corpus avec
-la config servie. `similarites_cosinus` fait `X @ requete`, qui marche
-nativement en sparse ; `_l2_normaliser` et `_ensembles_non_nuls`
-supposent du dense et devront être adaptés. `similarites_euclidiennes`
-n'a pas besoin d'être portée, puisqu'elle est prouvée équivalente au
-cosinus.
+**Un benchmark qui discrimine à nouveau.** À 26 livres, Rappel@3, @5 et
+@10 valent 1,0 pour `lemmes_12g` et `tokens_12g` : les deux configs sont
+indistinguables au-delà du rang 1, et la courbe Rappel@k demandée par le
+sujet est plate. Une saturation n'est pas un bon résultat, c'est une
+absence de mesure. Trois cents livres remettent des voisins proches dans
+le classement et redonnent de l'information à la courbe.
+
+**De la puissance statistique côté résumé.** C'est le manque le plus net :
+`p = 0,169` sur la couverture n'est pas concluant à n = 26, et le
+départage entre MMR et le top-k naïf reste en suspens. À n ≈ 320, le même
+test des signes tranche.
+
+**Une couverture de genres qui ressemble au problème.** Le corpus initial
+tient à 26 livres tirés uniformément ; la collecte stratifiée en met une
+vingtaine dans chacun des 16 genres. La difficulté d'identification vient
+des voisins proches, donc d'un corpus qui contient plusieurs livres du
+même registre, pas d'un corpus qui en contient beaucoup au total.
+
+Ce que grossir le corpus ne fera pas : améliorer les 97,9 % à 99,2 %.
+Il faut plutôt s'attendre à les voir **baisser**, puisque la tâche
+devient plus difficile, et c'est le comportement attendu.
+
+**Vérifié après coup.** Le passage à 291 livres a fait exactement cela :
+le top-1 de `lemmes_12g` est passé de 97,88 % à 92,65 %, celui de
+`lemmes_1g` de 87,50 % à 70,31 %. Les trois bénéfices annoncés sont au
+rendez-vous, la désaturation de la courbe Rappel@k et le creusement de
+l'écart entre unigrammes et bigrammes en tête. Le détail est en section 2.
+
+## 6. Coût mémoire des représentations
+
+Cette section était une limite connue : la matrice TF-IDF était dense, ce
+qui plafonnait le corpus. Elle est désormais creuse (`csr_matrix`), et
+c'est ce qui rend possible le passage à plusieurs centaines de livres.
+
+### Ce que coûtait le dense
+
+Le vocabulaire des configs bigrammes croît presque linéairement avec le
+nombre de livres, donc une matrice dense N × V croît en gros comme N².
+
+Vocabulaires **mesurés**, et coût qu'aurait la matrice dense correspondante
+(N × V × 8 octets) :
+
+| config | vocab à 26 livres | dense à 26 | vocab à 291 livres | dense à 291 |
+|---|---|---|---|---|
+| `lemmes_1g` | 38 197 | 7,9 Mo | 143 882 | 335 Mo |
+| `lemmes_12g` | 734 223 | 153 Mo | 4 144 734 | **9,7 Go** |
+| `tokens_12g` | 837 739 | 174 Mo | 5 048 963 | **11,8 Go** |
+
+Le creux, lui, ne stocke que les cellules non nulles, dont le nombre croît
+linéairement avec les livres et non avec le produit N × V : de l'ordre de
+130 à 150 Mo à 291 livres pour les configs bigrammes.
+
+Une extrapolation par loi de Heaps ajustée sur 8 à 26 livres annonçait
+8,3 M de termes à 300 livres pour `lemmes_12g`, soit 20 Go en dense. La
+mesure réelle donne 4,1 M et 9,7 Go : l'extrapolation surestimait d'un
+facteur 2, l'exposant ayant été ajusté sur de petits corpus où le
+vocabulaire croît plus vite qu'ensuite. La conclusion ne bouge pas pour
+autant, 9,7 Go restant hors de portée.
+
+Le remplissage tombe de 5,0 % à 0,4 % pour `lemmes_12g` entre 26 et 300
+livres : le dense se paie de plus en plus cher à mesure qu'il sert de
+moins en moins.
+
+### Ce que le changement n'a pas changé
+
+Le passage au creux devait être neutre sur les résultats, et il l'est.
+Vérifié à trois niveaux :
+
+1. **Matrice et vocabulaire** identiques à l'implémentation dense sur les
+   trois configs du corpus réel, à 3 × 10⁻¹⁶ près sur les similarités.
+2. **Classements** identiques : rang du vrai livre inchangé sur les 130
+   requêtes, et ordre relatif conservé partout où deux scores sont séparés
+   par plus que le bruit flottant. Les seules permutations observées
+   portent sur des blocs de livres à score nul, que le tri départage
+   arbitrairement dans les deux cas.
+3. **Benchmark complet** : `evaluer_recherche` rejoué avec les deux
+   implémentations sur le même corpus et la même graine rend des tableaux
+   `pandas` **strictement égaux** (`DataFrame.equals` vrai).
+
+La comparaison à `sklearn.TfidfVectorizer` reste valide (écart 5,5 × 10⁻¹⁴
+sur la config servie), et `tests/test_representations.py` fige ces
+propriétés.
+
+Effet secondaire mesuré : le creux est aussi un peu plus rapide,
+`lemmes_12g` passant de 8,1 s à 6,2 s pour 130 requêtes × 3 métriques.
+
+### Deux détails d'implémentation qui comptent
+
+`similarites_euclidiennes` **a** été portée, contrairement à ce qui était
+prévu ici. L'argument « elle est équivalente au cosinus donc inutile de la
+porter » vaut pour le choix de la métrique servie, pas pour le code : le
+benchmark l'évalue quand même, et sa formulation d'origine calculait
+`X - requete`, une opération dense qui aurait alloué les 20 Go que le
+passage au creux vise justement à éviter. Elle passe donc par l'identité
+`||x-q||² = ||x||² + ||q||² - 2x·q`, qui ne touche que les cellules non
+nulles.
+
+`fit_transform` fait maintenant **deux passes** sur les documents au lieu
+d'une. L'ancienne version gardait un `Counter` par document pendant tout
+le calcul ; à 300 livres en bigrammes cela ferait environ 21 millions
+d'entrées de dictionnaire à clés chaînes vivantes simultanément, soit
+plusieurs Go avant même d'allouer la matrice. On reconstruit donc les
+n-grammes une seconde fois pour n'avoir jamais qu'un document en mémoire.
+
+### Le reste du chargement
+
+`charger_corpus()` garde par défaut le DataFrame annoté de chaque livre,
+soit 3,2 Mo par livre mesurés, auxquels s'ajoutent 3,1 Mo de séquences de
+termes : environ 1,9 Go à 300 livres. Or presque personne n'a besoin des
+DataFrames en permanence. `charger_corpus(with_df=False)` les relâche en
+conservant `n_tokens` et `n_phrases`, et `iter_corpus()` sert les
+consommateurs livre par livre (résumés MMR, découpage Word2Vec).
+
+## 7. Limites connues
 
 Les notebooks 05 et 07 ont été exécutés avant ces changements. Leurs
 sorties utilisent `min_df=2` et l'ancienne pondération, et le 05 conclut
@@ -304,3 +541,19 @@ Le 05 tire de plus `debut_l` et `debut_t` indépendamment, donc ses
 extraits « lemmes » et « tokens » ne portent pas sur les mêmes passages
 et sa comparaison entre représentations n'est pas contrôlée. Les rejouer
 en appelant `pipeline.benchmark` supprimerait le problème.
+
+La question `min_df` est tranchée, et en faveur de 1 : voir les tests
+appariés de la section 2. Le réglage rapporte 10,03 points de top-1 à 291
+livres, contre 1,5 à 26. Il reste à décider si ces 10 points valent le
+facteur 5,4 sur le vocabulaire, mais ce n'est plus une question de mesure,
+c'est un arbitrage entre exactitude et ressources.
+
+Reste ouverte la **bascule du bundle servi vers `tokens_12g`**, que les
+mêmes tests recommandent et qui n'a pas encore été faite dans
+`build_serving_bundle.py`.
+
+Les seuils de `COLLECTE_PARAMS` sont calibrés sur les 26 livres du corpus
+initial pris comme témoin : aucun d'eux ne serait rejeté par les portes.
+C'est une garantie contre un réglage trop sévère, pas contre un réglage
+trop permissif, qui ne se verra qu'en inspectant ce que la collecte a
+effectivement laissé entrer.
