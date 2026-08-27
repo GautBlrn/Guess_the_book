@@ -130,8 +130,26 @@ ANNEXES_POST_FIN = [
     re.compile(r"(?im)^\s*ARBRE\s+G[EÉ]N[EÉ]ALOGIQUE.*$"),
 ]
 
-# Bandes decoratives en toute fin de fichier
-TRAILING_DECORATION = re.compile(r"(?m)(?:^[\s#*=\-_~+]*$\r?\n?)+\Z")
+# Bandes decoratives en toute fin de fichier.
+#
+# LA CLASSE NE DOIT PAS CONTENIR `\n`. La version precedente utilisait
+# `\s`, qui l'inclut, dans `(?:^[\s...]*$\r?\n?)+\Z` : trois elements du
+# motif pretendaient alors consommer le meme saut de ligne (la classe, le
+# `$` multiligne, et le `\n?`). Le moteur doit essayer toutes les facons de
+# repartir les sauts de ligne entre eux, et comme le groupe est repete par
+# `+`, le nombre de repartitions explose avec le nombre de lignes.
+#
+# Tant que `\Z` reussit, le premier essai suffit et personne ne voit rien.
+# C'est quand `\Z` ECHOUE que le moteur explore tout l'espace avant de
+# renoncer, et `sub()` tente le motif a chaque position de la chaine. Sur
+# un fichier CRLF de 326 000 caracteres se terminant par de la prose
+# (pg75717, « L'Etbaye »), le nettoyage ne rendait plus la main.
+#
+# `\r` peut rester dans la classe : en Python, `$` ne s'ancre que devant
+# `\n`, jamais devant `\r`, donc il n'y a pas d'ambiguite le concernant.
+# Chaque iteration consomme exactement une ligne, et le motif redevient
+# lineaire.
+TRAILING_DECORATION = re.compile(r"(?m)(?:^[ \t\r#*=\-_~+]*$\n?)+\Z")
 
 
 # ============================================================================

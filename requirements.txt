@@ -13,30 +13,45 @@
 # Versions epinglées pour que le build Docker soit reproductible.
 
 # --- Backend Flask ---
-flask
-flask-cors
-gunicorn
+flask==3.0.3
+flask-cors==5.0.0
+gunicorn==23.0.0
 python-dotenv
 
 # --- Frontend Streamlit ---
-streamlit
-requests
+streamlit==1.39.0
+requests==2.32.3
 
 # --- NLP runtime (annotation de l'extrait utilisateur) ---
-spacy
+#
+# 3.8 et pas 3.7.5 : spacy 3.7.5 resout thinc 8.2.4, dont la wheel est
+# compilee contre numpy 1.x et casse a l'import sous numpy 2
+# (`ValueError: numpy.dtype size changed`). La 3.8 tire thinc 8.3, compile
+# contre numpy 2. C'est aussi la version du venv de dev, donc le meme
+# modele fr_core_news_sm (3.8.0) des deux cotes.
+spacy==3.8.15
 # Le modele fr_core_news_sm est installe via `spacy download` dans le
 # Dockerfile, pas via pip (cf. instructions spaCy).
 
 # --- Calcul scientifique ---
-numpy
-pandas
-scipy
+#
+# NUMPY 2 OBLIGATOIRE ICI. Le serving_bundle.pkl est ecrit par
+# build_serving_bundle.py, qui tourne sous requirements-dev.txt (numpy>=1.26,
+# donc numpy 2 en pratique). Numpy 2 a renomme `numpy.core` en `numpy._core`
+# et le pickle d'un ndarray reference ce chemin de module : un runtime en
+# numpy 1.26 leve `ModuleNotFoundError: No module named 'numpy._core.numeric'`
+# au chargement du bundle, gunicorn meurt a l'import et le conteneur ne
+# demarre jamais. La contrainte est donc : version majeure de numpy identique
+# entre ce fichier et requirements-dev.txt.
+numpy==2.0.2
+pandas==2.2.3
+scipy==1.14.1
 
 # --- Stockage S3 ---
-boto3
-botocore
+boto3==1.35.36
+botocore==1.35.36
 
 # --- Parquet (pour `charger_corpus` côté précompute -- pas utilisé au runtime
 #     mais le module pipeline.corpus l'importe au top-level, donc on le garde
 #     pour éviter ImportError. ~5 Mo, négligeable.) ---
-pyarrow
+pyarrow==17.0.0

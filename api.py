@@ -75,6 +75,7 @@ log = logging.getLogger("api")
 class State:
     bundle = None        # dict {version, config, vectoriseur, matrice, index}
     resumes = {}         # {livre_slug: contenu_texte}
+    cles_clean = {}      # {livre_slug: cle_s3_du_clean}
     nlp_loaded = False   # spaCy est lazy-loaded au premier /api/identifier
 
 
@@ -86,11 +87,35 @@ STATE = State()
 # ============================================================================
 
 def charger_bundle():
-    """Récupère le bundle depuis S3 et l'unpickle en mémoire."""
+    """
+    Récupère le bundle depuis S3 et l'unpickle en mémoire.
+
+    Le bundle est un pickle, donc il lie l'environnement qui l'a écrit
+    (`build_serving_bundle.py`, deps de requirements-dev.txt) à celui qui
+    le lit (ce serveur, deps de requirements.txt). Une divergence de
+    version majeure de numpy entre les deux produit un
+    `ModuleNotFoundError` sur un chemin interne de numpy, message qui ne
+    dit rien de la cause réelle : on le retraduit ici.
+
+    Le pickle n'est pas une entrée utilisateur : il vient du bucket privé
+    du projet et n'est écrit que par `build_serving_bundle.py`.
+    """
     log.info(f"Téléchargement du bundle depuis s3://{BUNDLE_KEY}...")
     t0 = time.time()
     octets = storage.get_bytes(BUNDLE_KEY)
-    bundle = pickle.loads(octets)
+    try:
+        bundle = pickle.loads(octets)
+    except ModuleNotFoundError as e:
+        if "numpy" not in str(e):
+            raise
+        raise RuntimeError(
+            f"Le bundle n'est pas lisible avec numpy {np.__version__} "
+            f"({e}). Il a été sérialisé avec une version majeure "
+            "différente de numpy. Aligner la version de numpy entre "
+            "requirements.txt (runtime) et requirements-dev.txt "
+            "(build_serving_bundle.py), puis régénérer le bundle si "
+            "nécessaire."
+        ) from e
     log.info(
         f"  bundle chargé en {time.time() - t0:.1f}s : "
         f"{len(bundle['index'])} livres, "
@@ -122,11 +147,46 @@ def precharger_resumes(index):
     return resumes
 
 
+def indexer_cleans(index):
+    """
+    Associe chaque `livre_slug` à la clé S3 réelle de son texte nettoyé.
+
+    On liste `clean/` au lieu de reconstruire le chemin depuis les champs
+    de l'index. Les deux ne coïncident pas toujours : `GENRE_OVERRIDES`
+    corrige le genre AU RUNTIME dans `charger_corpus`, donc l'index du
+    bundle porte le genre corrigé alors que l'objet S3 est resté rangé
+    sous le genre d'origine. Le chemin reconstruit pointait alors dans le
+    vide (cas Monte-Cristo Tome I : index `adventure`, objet sous
+    `historical_fiction`).
+
+    Une seule requête de listing au démarrage, ~26 clés. Le slug étant
+    unique par construction (il porte l'identifiant Gutenberg), le nom de
+    fichier suffit à identifier le livre sans passer par le genre.
+    """
+    log.info("Indexation des textes nettoyés...")
+    par_slug = {}
+    for objet in storage.list_objects(PREFIXES["clean"], suffix=".txt"):
+        slug = objet["Key"].rsplit("/", 1)[-1].removesuffix(".txt")
+        par_slug[slug] = objet["Key"]
+
+    cles = {}
+    for entree in index:
+        cle = par_slug.get(entree["livre_slug"])
+        if cle is None:
+            # Pas bloquant : seule la route /api/extrait en dépend.
+            log.warning(f"  clean introuvable pour {entree['livre_slug']}")
+            continue
+        cles[entree["livre_slug"]] = cle
+    log.info(f"  {len(cles)}/{len(index)} textes nettoyés localisés.")
+    return cles
+
+
 def initialiser():
     """Charge bundle + résumés. Appelé une fois au démarrage."""
     storage.ensure_bucket()
     STATE.bundle = charger_bundle()
     STATE.resumes = precharger_resumes(STATE.bundle["index"])
+    STATE.cles_clean = indexer_cleans(STATE.bundle["index"])
     log.info("Serveur prêt à servir des requêtes.")
 
 
@@ -137,7 +197,13 @@ def initialiser():
 def vectoriser_extrait(extrait):
     """
     Annote l'extrait avec spaCy, extrait les lemmes, vectorise via le
-    TF-IDF du bundle. Renvoie un vecteur (V,) L2-normalisé.
+    TF-IDF du bundle. Renvoie une ligne creuse (1, V) L2-normalisée.
+
+    La ligne reste CREUSE jusqu'au produit scalaire. Un extrait porte
+    quelques dizaines de termes distincts ; le vecteur dense correspondant
+    ferait 8 x V octets, soit des dizaines de Mo alloués puis jetés à chaque
+    requête HTTP une fois le corpus à quelques centaines de livres.
+    `similarites_cosinus` accepte cette forme directement.
 
     Premier appel : charge spaCy `fr_core_news_sm` (~2 secondes).
     Appels suivants : annotation immédiate.
@@ -150,8 +216,11 @@ def vectoriser_extrait(extrait):
 
     df = annoter(extrait)
     champ = STATE.bundle["config"]["champ"]
-    # Le bundle a été construit avec champ="lemmes" par défaut. On extrait
-    # la même chose ici pour rester cohérent.
+    # Le champ est lu DANS le bundle et jamais suppose : c'est ce qui permet
+    # de changer la config servie sans toucher a l'API. Le defaut est passe
+    # de "lemmes" a "tokens" quand les tests apparies ont departage les deux
+    # (cf. le bloc de mesure de `build_serving_bundle.py`), et cette
+    # fonction n'a pas eu a bouger.
     if champ == "lemmes":
         termes = extraire_termes(df, champ="lemma")
     else:  # tokens
@@ -163,7 +232,7 @@ def vectoriser_extrait(extrait):
     vec = STATE.bundle["vectoriseur"]
     # transform attend une liste de documents (chaque doc = liste de termes).
     matrice = vec.transform([termes])
-    return matrice[0]  # vecteur (V,) L2-normalisé
+    return matrice[0]  # ligne creuse (1, V) L2-normalisée
 
 
 def classer_extrait(extrait, top_k=TOP_K_DEFAULT):
@@ -323,13 +392,16 @@ def route_extrait_aleatoire(livre_slug):
         taille = 80
     taille = max(20, min(taille, 500))
 
-    # Reconstruit la clé S3 du clean depuis les champs de l'entrée.
-    # On suit la même convention que `construire_cle()` mais sans charger
-    # le module : c'est juste un chemin S3 connu.
-    cle_clean = (
-        f"{PREFIXES['clean']}{entree['genre']}/"
-        f"{entree['auteur_slug']}/{entree['livre_slug']}.txt"
-    )
+    # Clé résolue au démarrage par listing S3 (cf. `indexer_cleans`). Le
+    # chemin reconstruit depuis `entree['genre']` ne sert que de repli :
+    # il est faux pour les livres dont le genre est corrigé par
+    # GENRE_OVERRIDES.
+    cle_clean = STATE.cles_clean.get(livre_slug)
+    if cle_clean is None:
+        cle_clean = (
+            f"{PREFIXES['clean']}{entree['genre']}/"
+            f"{entree['auteur_slug']}/{entree['livre_slug']}.txt"
+        )
 
     try:
         texte = storage.get_text(cle_clean)

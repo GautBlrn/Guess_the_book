@@ -15,8 +15,23 @@ from pipeline.config import GENRE_MAPPING
 
 # --- Slugification ---
 
+# Ligatures que NFKD ne decompose PAS, et qu'il faut donc traiter avant.
+#
+# Unicode considere « œ » et « æ » comme des lettres a part entiere de
+# l'orthographe francaise, pas comme des ligatures typographiques a la
+# maniere de « ﬁ ». NFKD les laisse donc intactes, et le passage en ASCII
+# qui suit les supprime purement et simplement : « Œuvres completes »
+# devenait « uvres_completes ». Le cas n'a rien de marginal sur un fonds
+# francais, ou les « Œuvres completes de X » se comptent par dizaines.
+LIGATURES = str.maketrans({
+    "œ": "oe", "Œ": "OE",
+    "æ": "ae", "Æ": "AE",
+})
+
+
 def slugifier(txt):
     """Rend une chaine safe pour une cle S3 : pas d'accent, pas d'espace."""
+    txt = txt.translate(LIGATURES)
     txt = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode()
     txt = re.sub(r"[^\w\s-]", "", txt).strip().lower()
     return re.sub(r"[\s_-]+", "_", txt)

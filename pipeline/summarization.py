@@ -183,12 +183,27 @@ def vectoriser_phrases_tfidf(phrases, ngram_max=2, min_df=2):
     cette specificite qui manquait a camembert pour identifier les
     phrases narrativement importantes.
 
-    Renvoie une matrice (N, V) L2-normalisee, donc cosinus = produit
+    Renvoie une matrice DENSE (N, V) L2-normalisee, donc cosinus = produit
     scalaire.
+
+    Densification explicite, et assumee. `TfIdfMaison` renvoie du creux
+    depuis le passage a l'echelle du corpus, mais ici le « corpus » est
+    l'ensemble des phrases d'UN livre : quelques milliers de lignes sur un
+    vocabulaire de quelques dizaines de milliers de termes, soit une matrice
+    de l'ordre de la centaine de Mo au pire, sans rapport avec les 20 Go que
+    couterait le corpus entier en dense.
+
+    En face, tout le calcul MMR en aval est ecrit en dense et le suppose :
+    `similarite_au_centre` fait un `mean(axis=0)` puis un `np.linalg.norm`,
+    TextRank construit la matrice pleine des similarites phrase a phrase
+    (`matrice @ matrice.T`, intrinsequement dense), et la boucle de
+    selection indexe des lignes comme des vecteurs 1-D. Convertir ici, en un
+    point unique et documente, coute moins cher que de rendre creux un
+    calcul qui redeviendrait dense deux lignes plus loin.
     """
     documents = [p["termes"] for p in phrases]
     vec = TfIdfMaison(ngram_max=ngram_max, min_df=min_df, max_df_ratio=1.0)
-    return vec.fit_transform(documents)
+    return vec.fit_transform(documents).toarray()
 
 
 # ============================================================================
@@ -304,8 +319,14 @@ def score_hybride(phrases, matrice_tfidf, emb_camembert, poids=None):
     Pas de score de position : sur un roman, l'incipit et le denouement
     sont souvent autant signifiants que le milieu.
 
-    `poids` : dict avec cles `centre`, `textrank`, `longueur`. Doit
-    sommer a 1. Defaut depuis EMB_PARAMS.
+    `poids` : dict avec cles `centre`, `textrank`, `longueur`. Defaut
+    depuis EMB_PARAMS.
+
+    La somme des poids n'a pas a valoir 1, et le defaut livre vaut
+    d'ailleurs 1.05 (0.70 + 0.30 + 0.05). Seul le score RELATIF entre
+    phrases est utilise, par MMR puis par le tri : multiplier tous les
+    poids par une constante ne change aucun classement. Ce sont les
+    rapports entre composantes qui comptent.
     """
     if poids is None:
         poids = EMB_PARAMS["poids_score"]
@@ -367,7 +388,7 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
                   min_tokens=None, max_tokens=None, min_df=None,
                   min_densite=None, max_propn_ratio=None,
                   ordre_narratif=False,
-                  embeddings_pre=None):
+                  embeddings_pre=None, poids=None):
     """
     Bout-en-bout : DataFrame annote -> liste de phrases selectionnees.
 
@@ -385,6 +406,17 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
         Embeddings camembert deja calcules pour les phrases candidates.
         Permet de reutiliser le calcul cote app/script entre plusieurs
         appels (ex. quand l'utilisateur change lambda).
+    poids : dict, optionnel
+        Ponderation du score hybride (cles `centre`, `textrank`,
+        `longueur`). Defaut : `EMB_PARAMS["poids_score"]`.
+
+        Existe pour que `pipeline/benchmark.py` puisse balayer la
+        ponderation sans monkeypatcher la config : le benchmark doit
+        mesurer cette fonction-ci, pas une reimplementation locale. La
+        mesure appariee sur 26 livres montre que le poids TextRank de
+        0.30 rend MMR plus redondant que le simple top-k TF-IDF
+        (7 livres sur 26, test des signes p = 0.029), donc ce parametre
+        n'est pas theorique : c'est le levier a explorer.
 
     Renvoie : liste de dicts avec les memes cles que `extraire_phrases`,
     enrichies de `score` (score hybride final) et `rang_mmr` (rang de
@@ -422,7 +454,7 @@ def resumer_livre(df, champ_termes="lemma", k=None, lambda_=None,
         emb_cam = _encoder_phrases([p["texte"] for p in phrases])
 
     # 3. Score hybride
-    scores = score_hybride(phrases, matrice_tfidf, emb_cam)
+    scores = score_hybride(phrases, matrice_tfidf, emb_cam, poids=poids)
 
     # 4. MMR sur camembert
     indices = mmr(emb_cam, scores, k=k, lambda_=lambda_)
