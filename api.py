@@ -197,7 +197,13 @@ def initialiser():
 def vectoriser_extrait(extrait):
     """
     Annote l'extrait avec spaCy, extrait les lemmes, vectorise via le
-    TF-IDF du bundle. Renvoie un vecteur (V,) L2-normalisé.
+    TF-IDF du bundle. Renvoie une ligne creuse (1, V) L2-normalisée.
+
+    La ligne reste CREUSE jusqu'au produit scalaire. Un extrait porte
+    quelques dizaines de termes distincts ; le vecteur dense correspondant
+    ferait 8 x V octets, soit des dizaines de Mo alloués puis jetés à chaque
+    requête HTTP une fois le corpus à quelques centaines de livres.
+    `similarites_cosinus` accepte cette forme directement.
 
     Premier appel : charge spaCy `fr_core_news_sm` (~2 secondes).
     Appels suivants : annotation immédiate.
@@ -210,8 +216,11 @@ def vectoriser_extrait(extrait):
 
     df = annoter(extrait)
     champ = STATE.bundle["config"]["champ"]
-    # Le bundle a été construit avec champ="lemmes" par défaut. On extrait
-    # la même chose ici pour rester cohérent.
+    # Le champ est lu DANS le bundle et jamais suppose : c'est ce qui permet
+    # de changer la config servie sans toucher a l'API. Le defaut est passe
+    # de "lemmes" a "tokens" quand les tests apparies ont departage les deux
+    # (cf. le bloc de mesure de `build_serving_bundle.py`), et cette
+    # fonction n'a pas eu a bouger.
     if champ == "lemmes":
         termes = extraire_termes(df, champ="lemma")
     else:  # tokens
@@ -223,7 +232,7 @@ def vectoriser_extrait(extrait):
     vec = STATE.bundle["vectoriseur"]
     # transform attend une liste de documents (chaque doc = liste de termes).
     matrice = vec.transform([termes])
-    return matrice[0]  # vecteur (V,) L2-normalisé
+    return matrice[0]  # ligne creuse (1, V) L2-normalisée
 
 
 def classer_extrait(extrait, top_k=TOP_K_DEFAULT):

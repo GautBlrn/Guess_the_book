@@ -116,10 +116,19 @@ def main():
     # des CSV en local. `ensure_bucket` appelle `create_bucket`, donc
     # exiger ce droit ferait echouer le benchmark sur une cle en lecture
     # seule alors qu'il n'ecrit rien sur S3.
-    corpus = charger_corpus()
-    if args.limite:
-        corpus = corpus[:args.limite]
-        print(f"Limite a {len(corpus)} livre(s).")
+    # Les DataFrames annotes ne servent QU'aux resumes (`evaluer_resumes` et
+    # `balayer_lambda` appellent `preparer_pool(livre["df"])`). La partie
+    # recherche ne lit que les sequences de termes.
+    #
+    # Sur le corpus de 291 livres, les retenir coute environ 2,2 Go de RSS
+    # mesures, pour des objets auxquels la partie recherche ne touche
+    # jamais. Ca ne change rien a la duree du chargement, qui est dominee
+    # par la latence S3, mais ca evite de tenir inutilement plusieurs Go.
+    besoin_df = (not args.skip_resumes) or args.balayer_lambda
+    # `limite` est passee au chargeur et non appliquee apres coup : elle
+    # sert a essayer la chaine sans payer le corpus entier, or le corpus
+    # entier se paie au telechargement.
+    corpus = charger_corpus(with_df=besoin_df, limite=args.limite)
     if not corpus:
         print("Corpus vide, rien a evaluer.")
         return 1

@@ -40,6 +40,7 @@ from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from pipeline.config import (
     BENCH_PARAMS,
@@ -187,15 +188,29 @@ def tirer_extraits(
 METRIQUES = ("cosinus", "euclidien", "jaccard")
 
 
-def _ensembles_non_nuls(matrice: np.ndarray) -> list[set[int]]:
-    """Ensemble des indices de features actives, ligne par ligne."""
+def _ensembles_non_nuls(matrice) -> list[set[int]]:
+    """
+    Ensemble des indices de features actives, ligne par ligne.
+
+    Sur une csr, les indices actifs d'une ligne sont deja stockes tels quels
+    (`indices` entre deux bornes de `indptr`) : on les lit, au lieu de
+    balayer les V colonnes de chaque ligne comme le ferait `flatnonzero`.
+    A 300 livres en bigrammes ce balayage porterait sur 2,5 milliards de
+    cellules dont 99,6 % de zeros.
+    """
+    if sp.issparse(matrice):
+        csr = matrice.tocsr()
+        return [
+            set(csr.indices[csr.indptr[i]:csr.indptr[i + 1]].tolist())
+            for i in range(csr.shape[0])
+        ]
     return [set(np.flatnonzero(ligne).tolist()) for ligne in matrice]
 
 
 def _classer(
-    matrice_corpus: np.ndarray,
+    matrice_corpus,
     ensembles_corpus: list[set[int]],
-    requete: np.ndarray,
+    requete,
     ensemble_requete: set[int],
     metrique: str,
 ) -> np.ndarray:
@@ -609,9 +624,42 @@ def evaluer_resumes(
         lambda_ = MMR_PARAMS["lambda_default"]
     methodes = list(methodes)
 
-    scores_par_methode: dict[str, list[dict]] = {m: [] for m in methodes}
-    redondances: dict[str, list[float]] = {m: [] for m in methodes}
-    couvertures: dict[str, list[float]] = {m: [] for m in methodes}
+    detail = mesurer_resumes_par_livre(
+        corpus, methodes=methodes, k=k, lambda_=lambda_,
+        avec_l=avec_l, encodeur=encodeur, verbose=verbose,
+    )
+    return agreger_resumes(detail, methodes, k, lambda_)
+
+
+def mesurer_resumes_par_livre(
+    corpus: Sequence[dict],
+    methodes: Iterable[str] = METHODES_RESUME,
+    k: int | None = None,
+    lambda_: float | None = None,
+    avec_l: bool = False,
+    encodeur: Callable[[list[str]], np.ndarray] | None = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Mesures BRUTES, une ligne par (livre, methode).
+
+    Separee de l'agregation parce que les moyennes ne permettent pas de
+    comparer deux methodes. Chaque livre est evalue par toutes les methodes
+    sur le MEME pool de phrases et le MEME encodage : les mesures sont donc
+    appariees, et un test des signes ou un Wilcoxon sur les differences
+    livre par livre est bien plus informatif que l'ecart des moyennes.
+
+    C'est exactement ce qui manquait pour trancher MMR contre `tfidf_naif` :
+    les deux moyennes se touchaient, sans qu'on puisse dire si l'ecart tenait
+    a une superiorite reguliere ou a quelques livres atypiques.
+    """
+    if k is None:
+        k = MMR_PARAMS["k_phrases"]
+    if lambda_ is None:
+        lambda_ = MMR_PARAMS["lambda_default"]
+    methodes = list(methodes)
+
+    lignes: list[dict] = []
     n_sautes = 0
 
     for livre in corpus:
@@ -637,9 +685,16 @@ def evaluer_resumes(
             scores, redond, couv = _mesurer(
                 selection, phrases, embeddings, reference, avec_l
             )
-            scores_par_methode[methode].append(scores)
-            redondances[methode].append(redond)
-            couvertures[methode].append(couv)
+            lignes.append({
+                "livre_slug":  livre["livre_slug"],
+                "livre":       livre["livre"],
+                "genre":       livre["genre"],
+                "methode":     methode,
+                "redondance":  redond,
+                "couverture":  couv,
+                "n_phrases_candidates": len(phrases),
+                **scores,
+            })
 
         if verbose:
             print(f"  {livre['livre'][:40]:40s} {time.time() - t0:5.1f}s")
@@ -647,20 +702,34 @@ def evaluer_resumes(
     if verbose and n_sautes:
         print(f"  {n_sautes} livre(s) saute(s), trop peu de phrases candidates.")
 
-    lignes = [
-        {
+    return pd.DataFrame(lignes)
+
+
+def agreger_resumes(detail, methodes, k, lambda_) -> pd.DataFrame:
+    """Moyennes et ecarts-types par methode, depuis les mesures brutes."""
+    if detail.empty:
+        return pd.DataFrame([])
+
+    colonnes_scores = [
+        c for c in detail.columns
+        if c.startswith(("rouge1", "rouge2", "rougeL"))
+    ]
+
+    lignes = []
+    for methode in methodes:
+        sous = detail[detail["methode"] == methode]
+        if sous.empty:
+            continue
+        lignes.append({
             "methode": methode,
             "k":       k,
             "lambda":  lambda_ if methode == "mmr" else None,
             **_agreger(
-                scores_par_methode[methode],
-                redondances[methode],
-                couvertures[methode],
+                sous[colonnes_scores].to_dict("records"),
+                sous["redondance"].tolist(),
+                sous["couverture"].tolist(),
             ),
-        }
-        for methode in methodes
-        if scores_par_methode[methode]
-    ]
+        })
     return pd.DataFrame(lignes)
 
 

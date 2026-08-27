@@ -455,7 +455,7 @@ def test_run_benchmark_recherche_ecrit_les_csv(corpus, tmp_path, monkeypatch):
     # camembert, que le script ne permet pas d'injecter.
     from scripts import run_benchmark
 
-    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda: corpus)
+    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda **_: corpus)
     monkeypatch.setattr(sys, "argv", [
         "run_benchmark",
         "--skip-resumes",
@@ -476,11 +476,54 @@ def test_run_benchmark_recherche_ecrit_les_csv(corpus, tmp_path, monkeypatch):
 def test_run_benchmark_signale_un_corpus_vide(tmp_path, monkeypatch):
     from scripts import run_benchmark
 
-    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda: [])
+    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda **_: [])
     monkeypatch.setattr(sys, "argv", [
         "run_benchmark", "--sortie", str(tmp_path),
     ])
     assert run_benchmark.main() == 1
+
+
+def test_run_benchmark_ne_charge_pas_les_df_sans_resumes(corpus, tmp_path,
+                                                         monkeypatch):
+    """
+    Les DataFrames annotes ne servent qu'aux resumes. Sur un corpus de 291
+    livres ils pesent environ 2,2 Go, donc le benchmark de recherche seul ne
+    doit pas les demander.
+    """
+    from scripts import run_benchmark
+
+    recus = {}
+
+    def faux_charger(**kwargs):
+        recus.update(kwargs)
+        return corpus
+
+    monkeypatch.setattr(run_benchmark, "charger_corpus", faux_charger)
+    monkeypatch.setattr(sys, "argv", [
+        "run_benchmark", "--skip-resumes", "--sortie", str(tmp_path),
+        "--taille-extrait", "3", "--n-extraits", "1",
+    ])
+    run_benchmark.main()
+    assert recus.get("with_df") is False
+
+
+def test_run_benchmark_charge_les_df_pour_les_resumes(corpus, tmp_path,
+                                                      monkeypatch):
+    """Le chemin resume, lui, en a besoin : `preparer_pool` lit `livre['df']`."""
+    from scripts import run_benchmark
+
+    recus = {}
+
+    def faux_charger(**kwargs):
+        recus.update(kwargs)
+        return []          # corpus vide : main() sort avant camembert
+
+    monkeypatch.setattr(run_benchmark, "charger_corpus", faux_charger)
+    monkeypatch.setattr(sys, "argv", [
+        "run_benchmark", "--sortie", str(tmp_path),
+    ])
+    run_benchmark.main()
+    assert recus.get("with_df") is True
 
 
 def test_run_benchmark_signale_des_livres_trop_courts(corpus, tmp_path, monkeypatch):
@@ -488,7 +531,7 @@ def test_run_benchmark_signale_des_livres_trop_courts(corpus, tmp_path, monkeypa
     # plutot que d'exporter un tableau vide ou de lever dans `evaluer_recherche`.
     from scripts import run_benchmark
 
-    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda: corpus)
+    monkeypatch.setattr(run_benchmark, "charger_corpus", lambda **_: corpus)
     monkeypatch.setattr(sys, "argv", [
         "run_benchmark", "--skip-resumes",
         "--sortie", str(tmp_path),

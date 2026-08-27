@@ -36,7 +36,7 @@ from pipeline import storage
 from pipeline.config import (
     MMR_PARAMS, PREFIXES, TFIDF_CONFIGS, TFIDF_PARAMS, W2V_PARAMS,
 )
-from pipeline.corpus import charger_corpus
+from pipeline.corpus import charger_corpus, iter_corpus
 from pipeline.parsing import construire_cle
 from pipeline.representations import TfIdfMaison
 from pipeline.summarization import formatter_resume, resumer_livre
@@ -91,28 +91,41 @@ def construire_tfidf(corpus, params=None):
 
 # --- Word2Vec ---
 
+def phrases_w2v_livre(df):
+    """Découpe UN livre annoté en phrases pour Word2Vec (frontières = sent_id)."""
+    masque = df["is_alpha"] & ~df["is_stop"] & ~df["is_punct"]
+    sub = df.loc[masque, ["sent_id", "lemma"]].copy()
+    sub["lemma"] = sub["lemma"].str.lower()
+    return [
+        groupe["lemma"].tolist()
+        for _, groupe in sub.groupby("sent_id")
+        if len(groupe) >= 3
+    ]
+
+
 def construire_phrases_w2v(corpus):
-    """Découpe le corpus en phrases pour Word2Vec (frontières = sent_id)."""
-    import pandas as pd
-    phrases = []
-    for c in corpus:
-        df = c["df"]
-        masque = df["is_alpha"] & ~df["is_stop"] & ~df["is_punct"]
-        sub = df.loc[masque, ["sent_id", "lemma"]].copy()
-        sub["lemma"] = sub["lemma"].str.lower()
-        for _, groupe in sub.groupby("sent_id"):
-            if len(groupe) >= 3:
-                phrases.append(groupe["lemma"].tolist())
-    return phrases
+    """
+    Découpe un corpus déjà chargé en phrases. Conservé pour les notebooks,
+    qui travaillent sur un corpus tenu en mémoire ; `main()` passe par
+    `phrases_w2v_livre` livre par livre pour ne pas tenir 300 DataFrames.
+    """
+    return [p for c in corpus for p in phrases_w2v_livre(c["df"])]
 
 
-def construire_w2v(corpus, params=None):
-    """Entraine Word2Vec sur le corpus et uploade les vecteurs."""
+def construire_w2v(phrases, params=None):
+    """
+    Entraine Word2Vec sur les phrases fournies et uploade les vecteurs.
+
+    Prend les phrases deja decoupees, et non le corpus : elles sont
+    accumulees pendant la passe de streaming de `main()`, ce qui evite de
+    recharger les DataFrames une seconde fois. La liste de phrases reste
+    en memoire (gensim fait `epochs` passes dessus et la relire depuis S3
+    a chaque epoque couterait bien plus cher que de la garder).
+    """
     if params is None:
         params = W2V_PARAMS
     from gensim.models import Word2Vec
 
-    phrases = construire_phrases_w2v(corpus)
     print(f"  {len(phrases):,} phrases pour entrainement")
 
     t0 = time.time()
@@ -144,6 +157,8 @@ def construire_w2v(corpus, params=None):
 
 def construire_index(corpus):
     """Index ordonne du corpus, stocke comme JSON. Sert de référence partagée."""
+    # `n_tokens` et `n_phrases` viennent de `charger_corpus`, qui les calcule
+    # pendant le chargement : l'index n'a donc pas besoin des DataFrames.
     index = [{
         "auteur":       c["auteur"],
         "auteur_slug":  c["auteur_slug"],
@@ -151,8 +166,8 @@ def construire_index(corpus):
         "livre_slug":   c["livre_slug"],
         "genre":        c["genre"],
         "cle":          c["cle"],
-        "n_tokens":     int(len(c["df"])),
-        "n_phrases":    int(c["df"]["sent_id"].nunique()),
+        "n_tokens":     c["n_tokens"],
+        "n_phrases":    c["n_phrases"],
     } for c in corpus]
     cle = f"{PREFIXES['artifacts']}corpus_index.json"
     storage.put_json(cle, index, metadata={"n_livres": str(len(index))})
@@ -161,30 +176,35 @@ def construire_index(corpus):
 
 # --- Résumés MMR ---
 
+def resumer_et_uploader(c):
+    """Génère et uploade le résumé MMR d'UN livre (`c` doit porter son `df`)."""
+    phrases = resumer_livre(
+        c["df"],
+        champ_termes="lemma",
+        k=MMR_PARAMS["k_phrases"],
+        lambda_=MMR_PARAMS["lambda_default"],
+    )
+    resume = formatter_resume(
+        phrases,
+        livre=c["livre"], auteur=c["auteur"], genre=c["genre"],
+        k=MMR_PARAMS["k_phrases"], lambda_=MMR_PARAMS["lambda_default"],
+    )
+    cle = construire_cle(
+        PREFIXES["summaries"], c["genre"], c["auteur_slug"], c["livre_slug"], ".txt"
+    )
+    storage.put_text(
+        cle, resume,
+        metadata={"source": "summary_mmr",
+                  "k":       str(MMR_PARAMS["k_phrases"]),
+                  "lambda":  str(MMR_PARAMS["lambda_default"])},
+    )
+    print(f"  {c['auteur']:35s} -> {cle}")
+
+
 def construire_resumes(corpus):
     """Génère et uploade les résumés MMR pour tous les livres."""
     for c in corpus:
-        phrases = resumer_livre(
-            c["df"],
-            champ_termes="lemma",
-            k=MMR_PARAMS["k_phrases"],
-            lambda_=MMR_PARAMS["lambda_default"],
-        )
-        resume = formatter_resume(
-            phrases,
-            livre=c["livre"], auteur=c["auteur"], genre=c["genre"],
-            k=MMR_PARAMS["k_phrases"], lambda_=MMR_PARAMS["lambda_default"],
-        )
-        cle = construire_cle(
-            PREFIXES["summaries"], c["genre"], c["auteur_slug"], c["livre_slug"], ".txt"
-        )
-        storage.put_text(
-            cle, resume,
-            metadata={"source": "summary_mmr",
-                      "k":       str(MMR_PARAMS["k_phrases"]),
-                      "lambda":  str(MMR_PARAMS["lambda_default"])},
-        )
-        print(f"  {c['auteur']:35s} -> {cle}")
+        resumer_et_uploader(c)
 
 
 # --- Nettoyage des resumes orphelins ---
@@ -286,22 +306,40 @@ def nettoyer_resumes_orphelins(corpus, appliquer=False):
 def main():
     args = parser_args()
     storage.ensure_bucket()
-    corpus = charger_corpus()
+
+    # Chargement SANS les DataFrames : le TF-IDF ne lit que les sequences de
+    # termes, l'index et le nettoyage des orphelins que les metadonnees. Les
+    # DataFrames sont ~3,2 Mo par livre, soit 1 Go a 300 livres qu'on ne
+    # garderait que pour deux comptages deja calcules au chargement.
+    corpus = charger_corpus(with_df=False)
 
     if not args.skip_tfidf:
         print("--- TF-IDF ---")
         construire_tfidf(corpus)
         print()
 
-    if not args.skip_w2v:
-        print("--- Word2Vec ---")
-        construire_w2v(corpus)
+    # Word2Vec et les resumes sont les deux seuls a vouloir les DataFrames,
+    # et tous deux travaillent livre par livre. Une passe de streaming les
+    # sert ensemble : chaque Parquet est relu une fois, et un seul est en
+    # memoire a la fois.
+    if not args.skip_w2v or not args.skip_summaries:
+        quoi = " et ".join(
+            n for n, actif in (("Word2Vec", not args.skip_w2v),
+                               ("resumes MMR", not args.skip_summaries)) if actif
+        )
+        print(f"--- Passe par livre : {quoi} ---")
+        phrases_w2v = []
+        for c in iter_corpus(with_termes=False, with_df=True, verbose=True):
+            if not args.skip_w2v:
+                phrases_w2v.extend(phrases_w2v_livre(c["df"]))
+            if not args.skip_summaries:
+                resumer_et_uploader(c)
         print()
 
-    if not args.skip_summaries:
-        print("--- Resumes MMR ---")
-        construire_resumes(corpus)
-        print()
+        if not args.skip_w2v:
+            print("--- Word2Vec ---")
+            construire_w2v(phrases_w2v)
+            print()
 
     # Apres l'ecriture des resumes : les cles fraiches doivent etre en
     # place avant de calculer la difference, sinon celles du run courant

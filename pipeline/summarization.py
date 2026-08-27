@@ -183,12 +183,27 @@ def vectoriser_phrases_tfidf(phrases, ngram_max=2, min_df=2):
     cette specificite qui manquait a camembert pour identifier les
     phrases narrativement importantes.
 
-    Renvoie une matrice (N, V) L2-normalisee, donc cosinus = produit
+    Renvoie une matrice DENSE (N, V) L2-normalisee, donc cosinus = produit
     scalaire.
+
+    Densification explicite, et assumee. `TfIdfMaison` renvoie du creux
+    depuis le passage a l'echelle du corpus, mais ici le « corpus » est
+    l'ensemble des phrases d'UN livre : quelques milliers de lignes sur un
+    vocabulaire de quelques dizaines de milliers de termes, soit une matrice
+    de l'ordre de la centaine de Mo au pire, sans rapport avec les 20 Go que
+    couterait le corpus entier en dense.
+
+    En face, tout le calcul MMR en aval est ecrit en dense et le suppose :
+    `similarite_au_centre` fait un `mean(axis=0)` puis un `np.linalg.norm`,
+    TextRank construit la matrice pleine des similarites phrase a phrase
+    (`matrice @ matrice.T`, intrinsequement dense), et la boucle de
+    selection indexe des lignes comme des vecteurs 1-D. Convertir ici, en un
+    point unique et documente, coute moins cher que de rendre creux un
+    calcul qui redeviendrait dense deux lignes plus loin.
     """
     documents = [p["termes"] for p in phrases]
     vec = TfIdfMaison(ngram_max=ngram_max, min_df=min_df, max_df_ratio=1.0)
-    return vec.fit_transform(documents)
+    return vec.fit_transform(documents).toarray()
 
 
 # ============================================================================

@@ -12,6 +12,48 @@ BUCKET = "gautier-blairon-bucket"
 REGION = "fr-par"
 ENDPOINT_URL = "https://s3.fr-par.scw.cloud"
 
+# --- Robustesse des acces S3 ---
+#
+# Un chargement de corpus, c'est un GET par livre, en serie. A 26 livres une
+# coupure passagere etait improbable et sans consequence ; a 300, chaque run
+# enchaine 300 requetes et une seule qui echoue faisait tout perdre.
+#
+# `read_timeout` est releve parce que les Parquet annotes vont jusqu'a
+# quelques Mo et que le defaut de 60 s se revele juste sur une liaison
+# chargee. Les tentatives couvrent le cas ou la requete part quand meme en
+# timeout : on la reemet, avec une attente qui double a chaque essai.
+S3_PARAMS = {
+    "connect_timeout":   15,
+    "read_timeout":      120,
+    "max_tentatives":    5,
+    "attente_initiale":  1.0,   # secondes, doublee a chaque nouvel essai
+
+    # Telechargements simultanes au chargement du corpus.
+    #
+    # LE CHARGEMENT EST A 100 % DU RESEAU. Profil mesure sur 20 livres :
+    # telechargement 26,83 s par livre, lecture du Parquet 0,01 s,
+    # `extraire_termes` 0,01 s. Autrement dit, une fois les octets arrives,
+    # le corpus entier se met en forme en 3 secondes. Inutile de chercher a
+    # optimiser le calcul, il n'y en a pas.
+    #
+    # Et ce n'est pas le debit mais la LATENCE : les objets font moins d'un
+    # Mo, donc 27 s par objet est de l'attente, pas du transfert.
+    #
+    # ATTENTION EN COMPARANT DES MESURES. La latence de l'endpoint varie
+    # d'un facteur 15 selon le moment : le meme chargement de 291 livres a
+    # pris 1,7 s par livre un jour et 27 s le lendemain. Deux mesures prises
+    # a des heures differentes ne se comparent pas, et c'est un piege dans
+    # lequel il est facile de tomber.
+    #
+    # Le gain du parallelisme a donc ete mesure en A/B au meme instant, sur
+    # deux lots d'objets entrelaces : 27,59 s par objet en serie contre
+    # 10,12 s a 8 threads, soit x2,7. Et pas x8 : l'endpoint bride aussi la
+    # concurrence, ce qui est la raison de ne pas monter beaucoup plus haut.
+    # `max_pool_connections` du client est aligne sur cette valeur, sinon
+    # les threads se mettent en file d'attente sur les connexions.
+    "parallelisme":      8,
+}
+
 # Préfixes : un par étage du pipeline
 PREFIXES = {
     "raw":          "raw/",
@@ -75,6 +117,46 @@ GENRE_OVERRIDES = {
 # --- Nettoyage Gutenberg ---
 CLEAN_PARAMS = {
     "header_window": 15000
+}
+
+# --- Collecte du corpus ---
+#
+# Seuils des portes de `pipeline/collecte.valider_texte`. Calibres sur les
+# 26 livres du corpus initial, qui servent de temoin : un reglage qui
+# rejetterait un livre deja valide serait trop severe par construction.
+# Les valeurs mesurees sur ce temoin sont reportees en face de chaque seuil.
+COLLECTE_PARAMS = {
+    # Taille du texte BRUT, en caracteres.
+    # Temoin : de 50 480 (Promenades et interieurs) a 1 242 876 (L'homme qui
+    # rit). Le plancher laisse donc une marge d'un facteur 1,7 sous le plus
+    # court des livres deja retenus.
+    "taille_min_defaut": 30_000,
+    # Genres ou un texte court est la norme et non un fichier tronque. Un
+    # recueil de poemes ou une piece en un acte sont des oeuvres completes a
+    # 20 000 caracteres, la ou un roman a cette taille est un fragment.
+    "taille_min_par_genre": {
+        "poetry":        15_000,
+        "drama":         15_000,
+        "short_stories": 15_000,
+        "children":      15_000,
+    },
+    # Plafond : l'annotation spaCy est lineaire en longueur, et les fichiers
+    # au-dela sont en pratique des compendiums multi-volumes plutot que des
+    # oeuvres uniques. Marge d'un facteur 2,4 au-dessus du plus long temoin.
+    "taille_max": 3_000_000,
+
+    # Part maximale de mots-outils anglais dans le corps du texte.
+    # Temoin : maximum observe 0,004, sur 26 livres tous francais. Un texte
+    # reellement anglais tourne autour de 0,9. Les deux populations sont
+    # separees par deux ordres de grandeur, donc la valeur exacte du seuil
+    # importe peu -- 0,25 est place la ou il n'y a rien, volontairement.
+    "part_anglaise_max": 0.25,
+
+    # Part minimale du texte brut qui doit survivre au nettoyage.
+    # Temoin : minimum observe 0,85 (Oeuvres completes de Gustave Flaubert),
+    # mediane 0,98. Le seuil a 0,50 ne se declenche donc que sur un
+    # nettoyage franchement pathologique, pas sur un en-tete un peu gras.
+    "ratio_nettoyage_min": 0.50,
 }
 
 # --- Annotation ---
