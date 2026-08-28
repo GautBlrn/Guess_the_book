@@ -190,14 +190,30 @@ ANNOTATE_PARAMS = {
 # soit le meme roman en deux volumes : irreductible.
 #
 # ATTENTION AU COUT EN BIGRAMMES. Les bigrammes sont presque tous uniques,
-# donc min_df=1 les garde quasiment tous : le vocabulaire de `lemmes_12g`
-# passe de 87 k a 734 k termes, et comme `TfIdfMaison.fit_transform` fait un
-# `toarray()`, la matrice DENSE passe de 18 Mo a 153 Mo pour 26 livres, en
-# croissance lineaire avec le corpus. C'est pour ca que la config servie
-# reste `lemmes_1g` (7,9 Mo) : elle capte l'essentiel du gain pour un
-# cinquieme de la memoire de `lemmes_12g` en min_df=2.
+# donc min_df=1 les garde quasiment tous. Sur le corpus de 291 livres, le
+# vocabulaire de la config servie atteint 5 048 963 termes.
+#
+# Ce cout etait bloquant tant que `fit_transform` se terminait par un
+# `toarray()` : le vocabulaire croissant presque lineairement avec le
+# corpus, une matrice dense N x V croit en gros comme N^2, et la config
+# servie demanderait 11,8 Go a 291 livres. Elle renvoie une `csr_matrix`
+# depuis le passage a l'echelle, et le bundle servi tient dans 269,1 Mo.
+# Voir l'en-tete de `pipeline/representations.py` pour la mesure detaillee.
+#
+# LA CONFIG SERVIE EST `tokens_12g`. Elle etait `lemmes_1g` a l'origine,
+# puis `lemmes_12g` apres la mesure a longueur d'extrait realiste, puis
+# `tokens_12g` depuis le passage a 291 livres : l'ecart avec `lemmes_12g`
+# valait 0,20 point sur 26 livres et n'etait pas significatif, il vaut
+# 1,31 point sur 1455 extraits avec 25 paires discordantes contre 6
+# (McNemar p = 8,8e-4). Sur une tache d'identification, la forme flechie
+# employee par l'auteur est elle-meme une signature.
+#
+#   lemmes_1g   70,31 % top-1   vocab   143 882
+#   lemmes_12g  92,65 % top-1   vocab 4 144 734
+#   tokens_12g  93,95 % top-1   vocab 5 048 963   <- servie
 #
 # Reproduire : python -m scripts.run_benchmark --skip-resumes
+#              python -m scripts.tests_apparies
 TFIDF_PARAMS = {
     "min_df":       1,
     "max_df_ratio": 0.85,

@@ -175,9 +175,13 @@ Deux réglages méritent d'être compris :
   des livres, qui ne discriminent rien.
 
 Le prix de `min_df=1` est en bigrammes : ils sont presque tous uniques,
-donc quasiment tous conservés. Le vocabulaire de `lemmes_12g` monte à
-734 223 termes et la matrice dense à 153 Mo pour 26 livres. C'est assumé,
-la justification chiffrée est dans `evaluation.md`.
+donc quasiment tous conservés. Sur les 291 livres, le vocabulaire de la
+config servie monte à 5 048 963 termes. En représentation dense la matrice
+correspondante pèserait 11,8 Go et le calcul ne tournerait pas ; elle est
+creuse (`csr_matrix`) depuis le passage à l'échelle, et seules les cellules
+non nulles sont stockées. C'est assumé, la justification chiffrée est dans
+`evaluation.md` et la mesure mémoire dans l'en-tête de
+`pipeline/representations.py`.
 
 ### Le classement
 
@@ -195,11 +199,14 @@ sérialise un dict `{version, config, vectoriseur, matrice, index}` vers
 `artifacts/serving_bundle.pkl`. L'`index` contient une entrée par livre :
 métadonnées, `n_tokens`, `n_phrases`, et la clé S3 de son résumé.
 
-Le bundle actuellement en place est en `lemmes_12g` (178,6 Mo, vocabulaire
-de 734 223 termes). Le choix de `lemmes_12g` plutôt que `lemmes_1g` vient
-de la mesure à longueur d'extrait réaliste : 10,4 points de top-1 d'écart.
-Attention, le commentaire de `TFIDF_PARAMS` dans `config.py` affirme
-encore que la config servie est `lemmes_1g`, il n'a pas suivi la décision.
+Le bundle actuellement en place est en `tokens_12g` (269,1 Mo, vocabulaire
+de 5 048 963 termes). La config servie a changé deux fois, et chaque fois
+sur une mesure : `lemmes_1g` vers `lemmes_12g` sur la mesure à longueur
+d'extrait réaliste (10,4 points de top-1 d'écart sur 26 livres, 22,3 sur
+291), puis `lemmes_12g` vers `tokens_12g` sur le corpus élargi (1,31 point,
+25 paires discordantes contre 6, McNemar p = 8,8e-4). L'écart entre les
+deux dernières était de 0,20 point sur 26 livres, jugé non significatif à
+juste titre : c'est la puissance statistique qui manquait, pas l'effet.
 
 ## 6. Le résumé extractif
 
@@ -332,8 +339,6 @@ Listés ici pour éviter de perdre du temps dessus :
   interactifs et un onglet d'ajout de livre dans le Catalogue. Ces
   fonctions ont disparu avec le passage au backend Flask, la config étant
   désormais figée côté serveur.
-- Le commentaire de `TFIDF_PARAMS` annonce `lemmes_1g` comme config
-  servie, alors que le bundle en place est `lemmes_12g`.
 - Le commentaire du `Dockerfile` cite des variables `AWS_*` inexistantes.
 - L'objet `clean/` de Monte-Cristo Tome I est toujours rangé sous son
   genre d'origine (`historical_fiction`) alors que l'index porte le genre
@@ -341,5 +346,6 @@ Listés ici pour éviter de perdre du temps dessus :
   dents (elle résout les clés par listing, cf. section 7), mais les deux
   tomes restent rangés dans deux dossiers différents sur S3. Un
   `rebuild_pipeline` les réalignerait, au prix d'un orphelin à nettoyer.
-- Les notebooks 05 et 07 datent d'avant les décisions actées dans
-  `evaluation.md` et leurs conclusions sont périmées.
+- Les notebooks 04 à 07 ont été rejoués sur le corpus de 291 livres avec
+  le tirage apparié. Les notebooks 01 à 03 sont des démonstrations sur un
+  livre isolé, indépendantes des décisions de corpus.
