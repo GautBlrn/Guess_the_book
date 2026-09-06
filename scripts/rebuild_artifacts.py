@@ -30,7 +30,42 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# --- RACINE_DEPOT ---
+# Ce fichier est livre a deux endroits, et un nombre fixe de `.parent` ne peut
+# pas convenir aux deux :
+#
+#     dans le depot     projet_nlp_app/scripts/rebuild_artifacts.py
+#     dans la remise    Projet_2_.../Modeles/A_Gautier_Blairon/code_entrainement/
+#                       ou `parent.parent` vaut `Modeles/`, qui ne porte
+#                       aucun paquet `pipeline/`
+#
+# La racine cherchee est celle qui porte `pipeline/config.py`. On la trouve par
+# ce repere plutot que par un comptage de niveaux, et le repli est explicite.
+# Le bloc est recopie dans `build_serving_bundle.py` plutot que mis en commun :
+# il s'execute avant que `pipeline` soit importable, donc il ne peut pas en
+# venir.
+REPERE_RACINE = Path("pipeline") / "config.py"
+DISPOSITIONS = ("", "Applications/A_Gautier_Blairon")
+
+
+def _racine_depot() -> Path:
+    """Racine d'ou le paquet `pipeline` et les artefacts se resolvent."""
+    ici = Path(__file__).resolve()
+    for ancetre in ici.parents:
+        for disposition in DISPOSITIONS:
+            candidat = ancetre / disposition if disposition else ancetre
+            if (candidat / REPERE_RACINE).is_file():
+                return candidat
+    raise SystemExit(
+        f"racine du depot introuvable depuis {ici}\n"
+        f"  repere cherche : {REPERE_RACINE}\n"
+        f"  dispositions essayees : {DISPOSITIONS}\n"
+        "Lancer le script depuis le depot ou depuis l'archive decompressee."
+    )
+
+
+RACINE = _racine_depot()
+sys.path.insert(0, str(RACINE))
 
 from pipeline import storage
 from pipeline.config import (

@@ -38,12 +38,47 @@ import sys
 import time
 from pathlib import Path
 
-# Ce fichier vit a la RACINE du projet, donc son propre repertoire est
-# celui qui contient `pipeline/`. Le `parent.parent` d'origine, herite de
-# l'epoque ou il etait dans `scripts/`, pointait un cran trop haut : il ne
-# fonctionnait que parce que le repertoire courant est deja dans sys.path
-# quand on lance le script depuis la racine.
-sys.path.insert(0, str(Path(__file__).parent))
+# --- RACINE_DEPOT ---
+# Ce fichier vit a la RACINE du projet, donc son propre repertoire est celui
+# qui contient `pipeline/`. Le `parent.parent` d'origine, herite de l'epoque ou
+# il etait dans `scripts/`, pointait un cran trop haut : il ne fonctionnait que
+# parce que le repertoire courant est deja dans sys.path quand on lance le
+# script depuis la racine.
+#
+# Mais `Path(__file__).parent` ne suffit pas non plus, parce que le fichier est
+# livre a deux endroits :
+#
+#     dans le depot     projet_nlp_app/build_serving_bundle.py
+#     dans la remise    Projet_2_.../Modeles/A_Gautier_Blairon/code_entrainement/
+#                       ou le repertoire du fichier ne porte aucun `pipeline/`
+#
+# La racine cherchee est celle qui porte `pipeline/config.py`. On la trouve par
+# ce repere plutot que par un comptage de niveaux, et le repli est explicite.
+# Le bloc est recopie depuis `scripts/rebuild_artifacts.py` plutot que mis en
+# commun : il s'execute avant que `pipeline` soit importable, donc il ne peut
+# pas en venir.
+REPERE_RACINE = Path("pipeline") / "config.py"
+DISPOSITIONS = ("", "Applications/A_Gautier_Blairon")
+
+
+def _racine_depot() -> Path:
+    """Racine d'ou le paquet `pipeline` et les artefacts se resolvent."""
+    ici = Path(__file__).resolve()
+    for ancetre in ici.parents:
+        for disposition in DISPOSITIONS:
+            candidat = ancetre / disposition if disposition else ancetre
+            if (candidat / REPERE_RACINE).is_file():
+                return candidat
+    raise SystemExit(
+        f"racine du depot introuvable depuis {ici}\n"
+        f"  repere cherche : {REPERE_RACINE}\n"
+        f"  dispositions essayees : {DISPOSITIONS}\n"
+        "Lancer le script depuis le depot ou depuis l'archive decompressee."
+    )
+
+
+RACINE = _racine_depot()
+sys.path.insert(0, str(RACINE))
 
 from pipeline import storage
 from pipeline.config import PREFIXES, TFIDF_PARAMS
