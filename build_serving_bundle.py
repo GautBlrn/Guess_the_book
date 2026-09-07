@@ -80,13 +80,6 @@ def _racine_depot() -> Path:
 RACINE = _racine_depot()
 sys.path.insert(0, str(RACINE))
 
-from pipeline import storage
-from pipeline.config import PREFIXES, TFIDF_PARAMS
-from pipeline.corpus import charger_corpus
-from pipeline.parsing import construire_cle
-from pipeline.representations import TfIdfMaison
-
-
 # --- Config par defaut du bundle ---
 # `tokens_12g` + cosinus, avec le min_df=1 de TFIDF_PARAMS.
 #
@@ -172,6 +165,24 @@ def parser_args():
         help="Cle S3 de sortie (defaut: artifacts/serving_bundle.pkl)",
     )
     return p.parse_args()
+
+# --- `--help` sans la pile lourde ---
+# Les imports ci-dessous tirent boto3, botocore, pandas et gensim. Le
+# LISEZ-MOI de la remise promet que chaque script de `Modeles/` se verifie en
+# une commande qui « ne calcule rien et ne demande ni GPU ni reseau » : un
+# evaluateur qui lance `--help` dans un Python nu ne doit donc pas tomber sur
+# un ModuleNotFoundError avant d'avoir lu le mode d'emploi. Meme motif que
+# l'import tardif d'`ultralytics` dans le `train.py` du projet 1.
+if any(a in ("-h", "--help") for a in sys.argv[1:]):
+    parser_args()          # argparse imprime l'aide puis leve SystemExit(0)
+    raise SystemExit(0)    # filet, si jamais argparse rendait la main
+
+
+from pipeline import storage
+from pipeline.config import PREFIXES, TFIDF_PARAMS
+from pipeline.corpus import charger_corpus
+from pipeline.parsing import construire_cle
+from pipeline.representations import TfIdfMaison
 
 
 def construire_bundle(champ, ngram_max):
