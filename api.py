@@ -31,7 +31,6 @@ Lancement local :
     # Ou via gunicorn pour la prod :
     gunicorn --bind 0.0.0.0:5000 --workers 2 api:app
 """
-import io
 import logging
 import pickle
 import sys
@@ -48,7 +47,6 @@ from pipeline import storage
 from pipeline.annotation import annoter, extraire_termes
 from pipeline.config import PREFIXES
 from pipeline.representations import similarites_cosinus
-from pipeline.tokenization import tokeniser
 
 
 # ============================================================================
@@ -58,6 +56,12 @@ from pipeline.tokenization import tokeniser
 BUNDLE_KEY = f"{PREFIXES['artifacts']}serving_bundle.pkl"
 TOP_K_DEFAULT = 5
 TOP_K_MAX = 10  # plafond pour éviter qu'un client demande tout le corpus
+
+# Plafond du corps de requête. Sans lui, un POST de plusieurs mégaoctets part dans spaCy :
+# l'annotation est linéaire en taille de texte et le serveur ne tourne qu'avec UN worker
+# gunicorn (voir start.sh), donc une seule requête suffit à le rendre indisponible. 256 Ko
+# laissent largement la place à un extrait de roman, le plus long du corpus fait moins de 1 Ko.
+TAILLE_MAX_REQUETE = 256 * 1024
 
 # Logger basique : utile pour `docker logs -f` côté Scaleway
 logging.basicConfig(
@@ -270,6 +274,7 @@ def classer_extrait(extrait, top_k=TOP_K_DEFAULT):
 # ============================================================================
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = TAILLE_MAX_REQUETE
 CORS(app)  # utile si Streamlit est servi sur un autre port (8501 vs 5000)
 
 
@@ -315,16 +320,25 @@ def route_identifier():
     if not extrait:
         return jsonify({"error": "Le champ 'extrait' est vide"}), 400
 
-    # Borne et valide top_k
-    top_k = int(data.get("top_k", TOP_K_DEFAULT))
+    # Borne et valide top_k. `int()` sur une valeur JSON arbitraire lève ValueError ou
+    # TypeError ({"top_k": "cinq"}, {"top_k": null}) : sans ce try, le client reçoit un 500
+    # pour une faute de saisie qui est la sienne, et la trace part dans les logs comme si le
+    # serveur avait un défaut.
+    try:
+        top_k = int(data.get("top_k", TOP_K_DEFAULT))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Le champ 'top_k' doit être un entier."}), 400
     top_k = max(1, min(top_k, TOP_K_MAX))
 
     t0 = time.time()
     try:
         resultats = classer_extrait(extrait, top_k=top_k)
     except Exception as e:
+        # Le détail part dans les logs, pas dans la réponse : le message d'une exception
+        # boto3 ou spaCy porte des noms de bucket, de clé et de chemins internes, et le
+        # client n'en fait rien.
         log.exception(f"Erreur dans classer_extrait : {e}")
-        return jsonify({"error": f"Erreur interne : {e}"}), 500
+        return jsonify({"error": "Erreur interne du serveur."}), 500
     duree_ms = int((time.time() - t0) * 1000)
 
     if not resultats:
@@ -336,7 +350,6 @@ def route_identifier():
     return jsonify({
         "resultats":  resultats,
         "duree_ms":   duree_ms,
-        "n_termes":   "calculé côté serveur",  # peu utile à exposer
         "config":     STATE.bundle["config"],
     })
 
@@ -406,9 +419,10 @@ def route_extrait_aleatoire(livre_slug):
     try:
         texte = storage.get_text(cle_clean)
     except Exception as e:
+        # Idem : la clé S3 reste dans les logs. Voir /api/identifier.
         log.warning(f"Lecture clean échouée pour {livre_slug} : {e}")
         return jsonify({
-            "error": f"Impossible de lire le clean : {e}",
+            "error": "Le texte de ce livre n'a pas pu être lu.",
         }), 500
 
     # Échantillonnage : on coupe en mots, on tire un offset aléatoire,
