@@ -1,0 +1,20 @@
+# Theme de l'application.
+#
+# Le sujet (5.4.2) exige des couleurs respectant WCAG AA, soit un ratio de
+# contraste d'au moins 4,5 pour le texte courant. Le rouge primaire de Streamlit
+# (#FF4B4B) plafonne a 3,30 sur fond blanc : suffisant pour un aplat decoratif,
+# insuffisant des qu'il porte du texte, ce qui est le cas des boutons
+# secondaires. #B3261E garde la meme famille chromatique et mesure 6,54 sur
+# blanc, en texte comme en fond (le blanc pose dessus donne le meme ratio).
+#
+# Les autres valeurs reprennent le theme clair par defaut, ecrit explicitement
+# pour que l'apparence ne depende pas de la version de Streamlit installee.
+
+[theme]
+primaryColor = "#B3261E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#31333F"
+
+[browser]
+gatherUsageStats = false

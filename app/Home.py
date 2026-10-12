@@ -1,9 +1,11 @@
 """
 Page d'accueil : identifier un livre depuis un extrait.
 
-L'utilisateur colle un passage (~50 à 200 mots) et l'app interroge le
-backend Flask qui renvoie le top-5 des livres du corpus par similarité
-TF-IDF cosinus.
+L'utilisateur colle un passage (~50 à 200 mots), clique sur « Identifier
+le livre », et l'app interroge le backend Flask qui renvoie les meilleurs
+candidats du corpus par similarité TF-IDF cosinus. L'interface en demande
+dix, le sujet en exige cinq : les cinq premiers sont donc toujours là, et
+les suivants servent à juger de l'écart entre le premier et ses voisins.
 
 Bonus : un bouton "extrait aléatoire d'un livre du corpus" pour tester
 l'app sans copier-coller un vrai extrait. Utile pour la démo.
@@ -34,6 +36,24 @@ from utils import (
 st.set_page_config(
     page_title="Identifier un livre",
     layout="wide",
+)
+
+# Correctif d'accessibilite, mesure le 10 septembre 2026. Streamlit affiche ses
+# mentions secondaires (st.caption) et le texte indicatif des champs a 60 %
+# d'opacite : le contraste tombe respectivement a 3,70 et 3,54, sous le seuil AA
+# de 4,5 que le sujet exige. Le theme ne permet pas de corriger cette opacite,
+# elle est portee par la couleur elle-meme, d'ou cette regle. Le gris retenu
+# mesure 6,65 sur le fond de page et 5,93 sur le fond des champs.
+st.markdown(
+    """
+    <style>
+      [data-testid="stCaptionContainer"],
+      [data-testid="stCaptionContainer"] p { color: #5A5C66 !important; }
+      textarea::placeholder,
+      input::placeholder { color: #5A5C66 !important; opacity: 1 !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.title("Identifier un livre depuis un extrait")
@@ -113,6 +133,9 @@ with col_demo:
         # le lien est rompu via la comparaison `extrait_attendu == extrait`.
         st.session_state["livre_attendu_idx"] = livre_idx
         st.session_state["extrait_attendu"] = extrait_genere
+        # Un extrait tiré part directement à l'identification : le tirage vaut
+        # demande explicite, l'utilisateur n'a pas à cliquer deux fois.
+        st.session_state["extrait_a_identifier"] = extrait_genere
         st.session_state.pop("erreur_demo", None)
 
     st.button(
@@ -126,10 +149,26 @@ if "erreur_demo" in st.session_state:
     st.error(st.session_state["erreur_demo"])
 
 
+# --- Bouton de soumission ---
+
+# Le sujet (5.4.2) demande un bouton de recherche explicite, et lancer
+# l'identification à chaque frappe validée surprend au clavier. Streamlit
+# rejoue tout le script à la moindre interaction, donc le retour du bouton ne
+# survit pas au rerun suivant : on mémorise le texte soumis, qui sert de jeton.
+# Si l'utilisateur modifie ensuite son passage, le jeton ne correspond plus et
+# l'app redemande un clic au lieu de relancer une recherche non demandée.
+if st.button("Identifier le livre", type="primary"):
+    st.session_state["extrait_a_identifier"] = extrait
+
+
 # --- Garde fou ---
 
 if not extrait or not extrait.strip():
-    st.info("Saisis ou tire un extrait pour lancer l'identification.")
+    st.info("Saisis ou tire un extrait, puis clique sur « Identifier le livre ».")
+    st.stop()
+
+if st.session_state.get("extrait_a_identifier") != extrait:
+    st.info("Clique sur « Identifier le livre » pour lancer la recherche sur ce passage.")
     st.stop()
 
 
@@ -196,6 +235,28 @@ if livre_attendu_idx is not None:
 else:
     st.success(
         f"**Top 1 :** {top1_label} (score = {top1['score']:.3f})"
+    )
+
+# Réserve de confiance. Sans elle, un texte étranger au corpus reçoit un « Top 1 »
+# aussi affirmatif qu'une vraie correspondance. Les mesures de recette du
+# 10 septembre 2026 donnent 0,036 à 0,126 pour un extrait réellement issu du
+# fonds, contre 0,013 à 0,015 pour un texte absent : le seuil est posé entre les
+# deux. Il ne masque jamais le résultat, il le requalifie en hypothèse faible.
+SEUIL_CONFIANCE = 0.025
+MOTS_MINIMUM = 30
+
+if n_mots_brut < MOTS_MINIMUM:
+    st.warning(
+        f"Extrait court ({n_mots_brut} mots) : en dessous de {MOTS_MINIMUM} mots, "
+        "trop peu de termes discriminants subsistent après nettoyage pour que le "
+        "classement soit fiable. Rallonge le passage pour un résultat exploitable."
+    )
+elif top1["score"] < SEUIL_CONFIANCE:
+    st.warning(
+        f"Score du meilleur candidat faible ({top1['score']:.3f}, seuil de "
+        f"confiance {SEUIL_CONFIANCE:.3f}) : ce passage ne ressemble à aucun livre "
+        "du corpus de façon nette. Le classement ci-dessous reste ordonné, mais "
+        "il est à lire comme une liste d'hypothèses, pas comme une identification."
     )
 
 st.caption(f"Calcul effectué en {duree_ms} ms.")
