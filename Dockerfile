@@ -48,9 +48,24 @@ RUN python -m spacy download fr_core_news_sm
 COPY api.py start.sh ./
 COPY app/ ./app/
 COPY pipeline/ ./pipeline/
+# Le theme accessible vit ici. Sans cette copie, l'image reprend le theme par
+# defaut de Streamlit et les contrastes corriges en local repassent sous le
+# seuil AA dans le conteneur, sans que rien ne le signale.
+COPY .streamlit/ ./.streamlit/
 
-# --- Permissions ---
-RUN chmod +x start.sh
+# --- Permissions et compte non privilegie ---
+# Par defaut un conteneur tourne en root : une faille dans Flask, Streamlit ou une de leurs
+# dependances donne alors les droits root DANS le conteneur, ce qui est le premier barreau de
+# toute evasion. L'app n'ecrit nulle part sur le disque (le bundle vit en RAM, les resultats
+# sont renvoyes en JSON), elle n'a donc besoin d'aucun privilege.
+#
+# HOME est pose explicitement : Streamlit ecrit sa config sous ~/.streamlit et echoue au
+# demarrage si le HOME de l'utilisateur n'existe pas.
+RUN chmod +x start.sh \
+    && useradd --create-home --shell /usr/sbin/nologin --uid 10001 limier \
+    && chown -R limier:limier /app
+ENV HOME=/home/limier
+USER limier
 
 # --- Variables d'environnement de l'app ---
 # API_URL : Streamlit appelle Flask sur localhost (même container).
